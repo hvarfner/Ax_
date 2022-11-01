@@ -57,6 +57,7 @@ from ax.models.discrete.thompson import ThompsonSampler
 from ax.models.random.alebo_initializer import ALEBOInitializer
 from ax.models.random.sobol import SobolGenerator
 from ax.models.random.uniform import UniformGenerator
+from ax.models.random.prior import PriorGenerator
 from ax.models.torch.alebo import ALEBO
 from ax.models.torch.botorch import BotorchModel
 from ax.models.torch.botorch_kg import KnowledgeGradient
@@ -211,6 +212,11 @@ MODEL_KEY_TO_MODEL_SETUP: Dict[str, ModelSetup] = {
     "Uniform": ModelSetup(
         bridge_class=RandomModelBridge,
         model_class=UniformGenerator,
+        transforms=Cont_X_trans,
+    ),
+    "Prior": ModelSetup(
+        bridge_class=RandomModelBridge,
+        model_class=PriorGenerator,
         transforms=Cont_X_trans,
     ),
     "MOO": ModelSetup(
@@ -439,6 +445,7 @@ class Models(ModelRegistryBase):
     """
 
     SOBOL = "Sobol"
+    PRIOR = "Prior"
     GPEI = "GPEI"
     GPKG = "GPKG"
     GPMES = "GPMES"
