@@ -15,10 +15,10 @@ class PriorGenerator(RandomModel):
         seed: An optional seed value for the underlying PRNG.
     """
 
-    def __init__(self, prior: UserPrior, deduplicate: bool = False, seed: Optional[int] = None) -> None:
+    def __init__(self, prior: UserPrior, deduplicate: bool = False, seed: Optional[int] = None, generate_default: bool = True) -> None:
         super().__init__(deduplicate=deduplicate, seed=seed)
         self.prior = prior
-        
+        self.generate_default = generate_default
     
     def _gen_samples(self, n: int, tunable_d: int) -> np.ndarray:
         """Generate samples from the scipy uniform distribution.
@@ -28,4 +28,7 @@ class PriorGenerator(RandomModel):
         Returns:
             samples: An (n x d) array of random points.
         """
+        if  self.generate_default:
+            return self.prior.default
+            
         return self.prior._sample(num_samples=n)  # pyre-ignore
