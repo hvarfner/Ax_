@@ -243,6 +243,10 @@ class Surrogate(Base):
             botorch_model_class_args=botorch_model_class_args,
             robust_digest=kwargs.get("robust_digest", None),
         )
+        if input_constructor_kwargs.get('train_Yvar', None) is not None:
+            train_Yvar = torch.ones_like(formatted_model_inputs['train_Y']) * input_constructor_kwargs['train_Yvar']
+            formatted_model_inputs['train_Yvar'] = train_Yvar
+        
         # pyre-ignore [45]
         self._model = self.botorch_model_class(**formatted_model_inputs)
 
