@@ -29,6 +29,6 @@ class PriorGenerator(RandomModel):
             samples: An (n x d) array of random points.
         """
         if  self.generate_default:
-            return self.prior.default
+            return self.prior._default
             
         return self.prior._sample(num_samples=n)  # pyre-ignore
