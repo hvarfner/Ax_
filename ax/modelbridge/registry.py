@@ -137,7 +137,7 @@ Specified_Task_ST_MTGP_trans: List[Type[Transform]] = Cont_X_trans + [
 ALEBO_X_trans: List[Type[Transform]] = [RemoveFixed, IntToFloat, CenteredUnitX]
 ALEBO_Y_trans: List[Type[Transform]] = [Derelativize, StandardizeY]
 
-STANDARD_TORCH_BRIDGE_KWARGS: Dict[str, Any] = {"torch_dtype": torch.double}
+STANDARD_TORCH_BRIDGE_KWARGS: Dict[str, Any] = {"torch_dtype": torch.float}
 
 
 class ModelSetup(NamedTuple):
