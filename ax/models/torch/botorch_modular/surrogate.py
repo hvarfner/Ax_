@@ -314,6 +314,7 @@ class Surrogate(Base):
         candidate_metadata: Optional[List[List[TCandidateMetadata]]] = None,
         state_dict: Optional[Dict[str, Tensor]] = None,
         refit: bool = True,
+        refit_params: dict = Optional[Dict[str, Tensor]],
         original_metric_names: Optional[List[str]] = None,
     ) -> None:
         """Fits the underlying BoTorch ``Model`` to ``m`` outcomes.
@@ -373,11 +374,16 @@ class Surrogate(Base):
         if state_dict:
             self.model.load_state_dict(not_none(state_dict))
 
-        if state_dict is None or refit:
-            fit_botorch_model(
-                model=self.model, mll_class=self.mll_class, mll_options=self.mll_options
-            )
-
+        if not refit:
+            self.model.covar_module.outputscale = refit_params['outputscale']
+            self.model.covar_module.base_kernel.lengthscale = refit_params['lengthscale']
+            
+        else:
+            if state_dict is None or refit:
+                fit_botorch_model(
+                    model=self.model, mll_class=self.mll_class, mll_options=self.mll_options
+                )
+        
     def predict(self, X: Tensor) -> Tuple[Tensor, Tensor]:
         """Predicts outcomes given a model and input tensor.
 

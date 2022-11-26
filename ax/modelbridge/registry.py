@@ -170,6 +170,12 @@ MODEL_KEY_TO_MODEL_SETUP: Dict[str, ModelSetup] = {
         model_class=ModularBoTorchModel,
         transforms=Cont_X_trans + Y_trans,
         standard_bridge_kwargs=STANDARD_TORCH_BRIDGE_KWARGS,
+    ),    
+    "BoTorchNoTrans": ModelSetup(
+        bridge_class=TorchModelBridge,
+        model_class=ModularBoTorchModel,
+        transforms=Cont_X_trans,
+        standard_bridge_kwargs=STANDARD_TORCH_BRIDGE_KWARGS,
     ),
     "GPEI": ModelSetup(
         bridge_class=TorchModelBridge,
@@ -457,6 +463,7 @@ class Models(ModelRegistryBase):
     THOMPSON = "Thompson"
     BOTORCH = "BO"
     BOTORCH_MODULAR = "BoTorch"
+    BOTORCH_MODULAR_NOTRANS = 'BoTorchNoTrans'
     EMPIRICAL_BAYES_THOMPSON = "EB"
     UNIFORM = "Uniform"
     MOO = "MOO"

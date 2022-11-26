@@ -96,6 +96,7 @@ class BoTorchModel(TorchModel, Base):
         surrogate: Optional[Surrogate] = None,
         surrogate_options: Optional[Dict[str, Any]] = None,
         refit_on_update: bool = True,
+        refit_params: dict = Optional[Dict[str, Tensor]],
         refit_on_cv: bool = False,
         warm_start_refit: bool = True,
     ) -> None:
@@ -113,6 +114,7 @@ class BoTorchModel(TorchModel, Base):
         self._botorch_acqf_class = botorch_acqf_class
         self.acquisition_options = acquisition_options or {}
         self.refit_on_update = refit_on_update
+        self.refit_params = refit_params
         self.refit_on_cv = refit_on_cv
         self.warm_start_refit = warm_start_refit
 
@@ -181,7 +183,7 @@ class BoTorchModel(TorchModel, Base):
                 metric_names=metric_names,
                 force=True,
             )
-
+        refit = self.refit_on_update
         self.surrogate.fit(
             datasets=datasets,
             metric_names=metric_names,
@@ -190,6 +192,7 @@ class BoTorchModel(TorchModel, Base):
             state_dict=state_dict,
             refit=refit,
             original_metric_names=original_metric_names,
+            refit_params=self.refit_params
         )
 
     @copy_doc(TorchModel.update)
