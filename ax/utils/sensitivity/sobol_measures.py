@@ -7,8 +7,10 @@ from copy import deepcopy
 from typing import Callable, List, Optional
 
 import torch
+from ax.utils.common.typeutils import checked_cast
 from botorch.models.model import Model
-from botorch.sampling.samplers import SobolQMCNormalSampler
+from botorch.posteriors.gpytorch import GPyTorchPosterior
+from botorch.sampling.normal import SobolQMCNormalSampler
 from botorch.utils.sampling import draw_sobol_samples
 from botorch.utils.transforms import unnormalize
 from torch._tensor import Tensor
@@ -364,6 +366,15 @@ class SobolSensitivity(object):
                 )
 
 
+def GaussianLinkMean(mean: torch.Tensor, var: torch.Tensor) -> torch.Tensor:
+    return mean
+
+
+def ProbitLinkMean(mean: torch.Tensor, var: torch.Tensor) -> torch.Tensor:
+    a = mean / torch.sqrt(1 + var)
+    return torch.distributions.Normal(0, 1).cdf(a)
+
+
 class SobolSensitivityGPMean(object):
     def __init__(
         self,
@@ -373,6 +384,9 @@ class SobolSensitivityGPMean(object):
         second_order: bool = False,
         input_qmc: bool = False,
         num_bootstrap_samples: int = 1,
+        link_function: Callable[
+            [torch.Tensor, torch.Tensor], torch.Tensor
+        ] = GaussianLinkMean,
     ) -> None:
         r"""Computes three types of Sobol indices:
         first order indices, total indices and second order indices (if specified ).
@@ -397,10 +411,10 @@ class SobolSensitivityGPMean(object):
         self.num_bootstrap_samples = num_bootstrap_samples
         self.num_mc_samples = num_mc_samples
 
-        # pyre-fixme[3]: Return type must be annotated.
-        # pyre-fixme[2]: Parameter must be annotated.
-        def input_function(x):
-            return self.model.posterior(x).mean
+        def input_function(x: Tensor) -> Tensor:
+            with torch.no_grad():
+                p = checked_cast(GPyTorchPosterior, self.model.posterior(x))
+            return link_function(p.mean, p.variance)
 
         self.sensitivity = SobolSensitivity(
             dim=self.dim,
@@ -498,11 +512,14 @@ class SobolSensitivityGPSampling(object):
         )
         posterior = self.model.posterior(self.sensitivity.A_B_ABi)
         if self.gp_sample_qmc:
-            sampler = SobolQMCNormalSampler(num_samples=self.num_gp_samples, seed=0)
+            sampler = SobolQMCNormalSampler(
+                sample_shape=torch.Size([self.num_gp_samples]), seed=0
+            )
             # pyre-fixme[4]: Attribute must be annotated.
             self.samples = sampler(posterior)
         else:
-            self.samples = posterior.sample(torch.Size([self.num_gp_samples]))
+            with torch.no_grad():
+                self.samples = posterior.rsample(torch.Size([self.num_gp_samples]))
 
     def first_order_indices(self) -> Tensor:
         r"""Computes the first order Sobol indices:
