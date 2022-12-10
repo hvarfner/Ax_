@@ -469,6 +469,7 @@ def run_inference(
 def get_fully_bayesian_acqf(
     model: Model,
     objective_weights: Tensor,
+    acqf_constructor: TAcqfConstructor,
     outcome_constraints: Optional[Tuple[Tensor, Tensor]] = None,
     X_observed: Optional[Tensor] = None,
     X_pending: Optional[Tensor] = None,
@@ -477,7 +478,6 @@ def get_fully_bayesian_acqf(
     #  AcquisitionFunction]`; used as `Callable[[Model, Tensor,
     #  Optional[Tuple[Tensor, Tensor]], Optional[Tensor], Optional[Tensor],
     #  **(Any)], AcquisitionFunction]`.
-    acqf_constructor: TAcqfConstructor = get_NEI,
     **kwargs: Any,
 ) -> AcquisitionFunction:
     kwargs["marginalize_dim"] = -3
