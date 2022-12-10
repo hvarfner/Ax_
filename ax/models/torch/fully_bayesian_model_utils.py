@@ -284,7 +284,7 @@ PRIOR_REGISTRY = {
                 'input_warping_func': None,
             },
             'postprocessing': postprocess_bayesian_al
-    }
+    },
     'BO': {
         'parameter_priors':
             {
@@ -295,7 +295,7 @@ PRIOR_REGISTRY = {
                 'input_warping_func': None,
             },
             'postprocessing': postprocess_bayesian_al
-    }
+    },
     'FITBO': {
         'parameter_priors':
             {

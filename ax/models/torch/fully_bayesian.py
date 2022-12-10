@@ -52,6 +52,7 @@ from ax.models.torch.botorch_defaults import (
     recommend_best_observed_point,
     scipy_optimizer,
 )
+from botorch.acquisition.utils import get_acquisition_function
 from ax.models.torch.botorch_moo import MultiObjectiveBotorchModel
 from ax.models.torch.botorch_moo_defaults import get_NEHVI, pareto_frontier_evaluator
 from ax.models.torch.frontier_utils import TFrontierEvaluator
@@ -462,7 +463,6 @@ def run_inference(
     for k, v in samples.items():
         samples[k] = v[::thinning]  # apply thinning
     # compute the true lengthscales and get rid of the temporary variables
-    print(samples)
     return samples
 
 
@@ -557,7 +557,7 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
         self,
         model_constructor: TModelConstructor = get_and_fit_model_mcmc,
         model_predictor: TModelPredictor = predict_from_model_mcmc,
-        acqf_constructor: TAcqfConstructor = get_fully_bayesian_acqf,
+        acqf_constructor: TAcqfConstructor = get_NEI,
         # pyre-fixme[9]: acqf_optimizer declared/used type mismatch
         acqf_optimizer: TOptimizer = scipy_optimizer,
         best_point_recommender: TBestPointRecommender = recommend_best_observed_point,
@@ -612,7 +612,7 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
             self,
             model_constructor=with_prior(PRIOR_REGISTRY[prior_type], model_constructor),
             model_predictor=model_predictor,
-            acqf_constructor=acqf_constructor,
+            acqf_constructor=partial(get_fully_bayesian_acqf, acqf_constructor=acqf_constructor),
             acqf_optimizer=acqf_optimizer,
             best_point_recommender=best_point_recommender,
             refit_on_cv=refit_on_cv,
