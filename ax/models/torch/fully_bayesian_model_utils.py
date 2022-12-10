@@ -163,6 +163,24 @@ def pyro_sample_input_warping(
     return c0, c1
 
 
+def postprocess_saas_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    inv_length_sq = (
+        samples["kernel_tausq"].unsqueeze(-1) * samples["_kernel_inv_length_sq"]
+    )
+    samples["lengthscale"] = (1.0 / inv_length_sq).sqrt()  # pyre-ignore [16]
+    del samples["kernel_tausq"], samples["_kernel_inv_length_sq"]
+    # this prints the summary
+
+    return samples
+
+
+def postprocess_bayesian_al(samples: Dict[str, Tensor], mu: float = 0.0, outputscale: float = 1.0) -> Dict[str, Tensor]:
+    num_samples = samples['noise'].shape[0]
+    samples['mean'] = mu * torch.ones(num_samples)
+    samples['outputscale'] = outputscale * torch.ones(num_samples)
+    return samples
+
+
 # pyre-fixme[24]: Generic type `dict` expects 2 type parameters, use `typing.Dict`
 #  to avoid runtime subscripting errors.
 def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None:
@@ -212,3 +230,81 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .clone()
             .view(model.input_transform.concentration1.shape),  # pyre-ignore
         )
+
+
+def pyro_sample_al_noise(mu: float = 0, var: float = 3.0, **tkwargs: Any) -> Tensor:
+    return pyro.sample(
+        "noise",
+        # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
+        pyro.distributions.LogNormal(
+            torch.tensor(mu, **tkwargs),
+            torch.tensor(var ** 0.5, **tkwargs),
+        ),
+    )
+
+
+def pyro_sample_al_lengthscales(dim, mu: float = 0, var: float = 3.0, **tkwargs: Any) -> Tensor:
+    return pyro.sample(
+        "lengthscale",
+        # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
+        pyro.distributions.LogNormal(
+            torch.ones(dim, **tkwargs) * mu,
+            torch.ones(dim, **tkwargs) * var ** 0.5
+        ),
+    )
+
+
+def pyro_sample_al_outputscale(**tkwargs: Any) -> Tensor:
+    return Tensor([1.0]).to(**tkwargs)
+
+
+def pyro_sample_al_mean(**tkwargs: Any) -> Tensor:
+    return Tensor([0.0]).to(**tkwargs)
+
+
+PRIOR_REGISTRY = {
+    'SAAS': {
+        'parameter_priors':
+            {
+                'outputscale_func': pyro_sample_outputscale,
+                'mean_func': pyro_sample_mean,
+                'noise_func': pyro_sample_noise,
+                'lengthscale_func': pyro_sample_saas_lengthscales,
+                'input_warping_func': pyro_sample_input_warping,
+            },
+            'postprocessing': postprocess_saas_samples
+    },
+    'BAL': {
+        'parameter_priors':
+            {
+                'outputscale_func': pyro_sample_al_outputscale,
+                'mean_func': pyro_sample_al_mean,
+                'noise_func': pyro_sample_al_noise,
+                'lengthscale_func': pyro_sample_al_lengthscales,
+                'input_warping_func': None,
+            },
+            'postprocessing': postprocess_bayesian_al
+    }
+    'BO': {
+        'parameter_priors':
+            {
+                'outputscale_func': pyro_sample_al_outputscale,
+                'mean_func': pyro_sample_al_mean,
+                'noise_func': pyro_sample_al_noise,
+                'lengthscale_func': pyro_sample_al_lengthscales,
+                'input_warping_func': None,
+            },
+            'postprocessing': postprocess_bayesian_al
+    }
+    'FITBO': {
+        'parameter_priors':
+            {
+                'outputscale_func': pyro_sample_al_outputscale,
+                'mean_func': pyro_sample_al_mean,
+                'noise_func': pyro_sample_al_noise,
+                'lengthscale_func': pyro_sample_al_lengthscales,
+                'input_warping_func': None,
+            },
+            'postprocessing': postprocess_bayesian_al
+    }
+}

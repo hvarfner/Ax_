@@ -32,9 +32,11 @@ import warnings
 
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from functools import partial
 
 import numpy as np
 import torch
+from pyro.distributions import Distribution
 from ax.exceptions.core import AxError
 from ax.models.torch.botorch import (
     BotorchModel,
@@ -61,7 +63,9 @@ from ax.models.torch.fully_bayesian_model_utils import (
     pyro_sample_noise,
     pyro_sample_outputscale,
     pyro_sample_saas_lengthscales,
+    postprocess_saas_samples
 )
+from ax.models.torch.fully_bayesian_model_utils import PRIOR_REGISTRY
 from ax.utils.common.docutils import copy_doc
 from ax.utils.common.logger import get_logger
 from ax.utils.common.typeutils import checked_cast
@@ -81,6 +85,14 @@ SAAS_DEPRECATION_MSG = (
     "SAAS priors are used by default. "
     "This will become an error in the future."
 )
+
+
+def with_prior(prior_dict: Dict[str, Optional[Any]], constructor: TModelConstructor) -> TModelConstructor:
+    return partial(constructor, **prior_dict)
+
+
+def with_parameter_priors(model_spec: Callable, parameter_dict: Dict[str, Optional[Any]]) -> Callable:
+    return partial(model_spec, **parameter_dict)
 
 
 def predict_from_model_mcmc(model: Model, X: Tensor) -> Tuple[Tensor, Tensor]:
@@ -178,15 +190,25 @@ def rbf_kernel(X: Tensor, Z: Tensor, lengthscale: Tensor) -> Tensor:
     return torch.exp(-0.5 * (dist**2))
 
 
+def fitbo_pyro_model(args):
+    pass
+
+
 def single_task_pyro_model(
     X: Tensor,
     Y: Tensor,
     Yvar: Tensor,
+    mean_func: Callable,
+    noise_func: Callable,
+    outputscale_func: Callable,
+    lengthscale_func: Callable,
+    input_warping_func: Callable,
     use_input_warping: bool = False,
     eps: float = 1e-7,
     gp_kernel: str = "matern",
     task_feature: Optional[int] = None,
     rank: Optional[int] = None,
+
 ) -> None:
     r"""Instantiates a single task pyro model for running fully bayesian inference.
 
@@ -205,19 +227,19 @@ def single_task_pyro_model(
     tkwargs = {"dtype": X.dtype, "device": X.device}
     dim = X.shape[-1]
     # TODO: test alternative outputscale priors
-    outputscale = pyro_sample_outputscale(concentration=2.0, rate=0.15, **tkwargs)
-    mean = pyro_sample_mean(**tkwargs)
+    outputscale = outputscale_func(**tkwargs)
+    mean = mean_func(**tkwargs)
     if torch.isnan(Yvar).all():
         # infer noise level
-        noise = pyro_sample_noise(**tkwargs)
+        noise = noise_func(**tkwargs)
     else:
         noise = Yvar.clamp_min(MIN_OBSERVED_NOISE_LEVEL)
     # pyre-fixme[6]: For 2nd param expected `float` but got `Union[device, dtype]`.
-    lengthscale = pyro_sample_saas_lengthscales(dim=dim, **tkwargs)
+    lengthscale = lengthscale_func(dim=dim, **tkwargs)
 
     # transform inputs through kumaraswamy cdf
     if use_input_warping:
-        c0, c1 = pyro_sample_input_warping(dim=dim, **tkwargs)
+        c0, c1 = input_warping_func(dim=dim, **tkwargs)
         # unnormalize X from [0, 1] to [eps, 1-eps]
         X = (X * (1 - 2 * eps) + eps).clamp(eps, 1 - eps)
         X_tf = 1 - torch.pow((1 - torch.pow(X, c1)), c0)
@@ -249,6 +271,8 @@ def _get_model_mcmc_samples(
     task_features: List[int],
     fidelity_features: List[int],
     metric_names: List[str],
+    pyro_model: Callable,
+    postprocessing: Callable,
     state_dict: Optional[Dict[str, Tensor]] = None,
     refit_model: bool = True,
     use_input_warping: bool = False,
@@ -261,7 +285,6 @@ def _get_model_mcmc_samples(
     gp_kernel: str = "matern",
     verbose: bool = False,
     # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-    pyro_model: Callable = single_task_pyro_model,
     # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
     get_gpytorch_model: Callable = _get_single_task_gpytorch_model,
     rank: Optional[int] = 1,
@@ -317,6 +340,7 @@ def _get_model_mcmc_samples(
                 verbose=verbose,
                 task_feature=task_feature,
                 rank=rank,
+                postprocessing=postprocessing,
             )
             mcmc_samples_list.append(mcmc_samples)
     return model, mcmc_samples_list
@@ -329,6 +353,8 @@ def get_and_fit_model_mcmc(
     task_features: List[int],
     fidelity_features: List[int],
     metric_names: List[str],
+    parameter_priors: Dict[str, Optional[Any]],
+    postprocessing: Dict[str, Optional[Any]],
     state_dict: Optional[Dict[str, Tensor]] = None,
     refit_model: bool = True,
     use_input_warping: bool = False,
@@ -364,7 +390,8 @@ def get_and_fit_model_mcmc(
         disable_progbar=disable_progbar,
         gp_kernel=gp_kernel,
         verbose=verbose,
-        pyro_model=single_task_pyro_model,
+        pyro_model=with_parameter_priors(single_task_pyro_model, parameter_priors),
+        postprocessing=postprocessing,
         get_gpytorch_model=_get_single_task_gpytorch_model,
     )
     for i, mcmc_samples in enumerate(mcmc_samples_list):
@@ -378,6 +405,7 @@ def run_inference(
     X: Tensor,
     Y: Tensor,
     Yvar: Tensor,
+    postprocessing: Callable,
     num_samples: int = 256,
     warmup_steps: int = 512,
     thinning: int = 16,
@@ -388,7 +416,7 @@ def run_inference(
     verbose: bool = False,
     task_feature: Optional[int] = None,
     rank: Optional[int] = None,
-    jit_compile: bool = False,
+    jit_compile: bool = True,
 ) -> Dict[str, Tensor]:
     start = time.time()
     try:
@@ -421,15 +449,9 @@ def run_inference(
         task_feature=task_feature,
         rank=rank,
     )
-
-    # compute the true lengthscales and get rid of the temporary variables
     samples = mcmc.get_samples()
-    inv_length_sq = (
-        samples["kernel_tausq"].unsqueeze(-1) * samples["_kernel_inv_length_sq"]
-    )
-    samples["lengthscale"] = (1.0 / inv_length_sq).sqrt()  # pyre-ignore [16]
-    del samples["kernel_tausq"], samples["_kernel_inv_length_sq"]
-    # this prints the summary
+    samples = postprocessing(samples)
+
     if verbose:
         orig_std_out = sys.stdout.write
         sys.stdout.write = logger.info  # pyre-fixme[8]
@@ -439,6 +461,8 @@ def run_inference(
     # thin
     for k, v in samples.items():
         samples[k] = v[::thinning]  # apply thinning
+    # compute the true lengthscales and get rid of the temporary variables
+    print(samples)
     return samples
 
 
@@ -542,7 +566,7 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
         warm_start_refitting: bool = True,
         use_input_warping: bool = False,
         # use_saas is deprecated. TODO: remove
-        use_saas: Optional[bool] = None,
+        prior_type: Optional[str] = 'SAAS',
         num_samples: int = 256,
         warmup_steps: int = 512,
         thinning: int = 16,
@@ -584,12 +608,9 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
                 kernel and "rbf" corresponds to an RBF kernel.
             verbose: A boolean indicating whether to print summary stats from MCMC.
         """
-        # use_saas is deprecated. TODO: remove
-        if use_saas is not None:
-            warnings.warn(SAAS_DEPRECATION_MSG, DeprecationWarning)
         BotorchModel.__init__(
             self,
-            model_constructor=model_constructor,
+            model_constructor=with_prior(PRIOR_REGISTRY[prior_type], model_constructor),
             model_predictor=model_predictor,
             acqf_constructor=acqf_constructor,
             acqf_optimizer=acqf_optimizer,
