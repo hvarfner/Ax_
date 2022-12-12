@@ -12,6 +12,7 @@ from botorch.models.gp_regression import MIN_INFERRED_NOISE_LEVEL
 from botorch.models.gpytorch import GPyTorchModel
 from botorch.models.model_list_gp_regression import ModelListGP
 from gpytorch.kernels import RBFKernel, ScaleKernel
+from gpytorch.means import ZeroMean
 from torch import Tensor
 
 
@@ -20,6 +21,11 @@ def _get_rbf_kernel(num_samples: int, dim: int) -> ScaleKernel:
         base_kernel=RBFKernel(ard_num_dims=dim, batch_shape=torch.Size([num_samples])),
         batch_shape=torch.Size([num_samples]),
     )
+
+
+def _get_rbf_noscale_kernel(num_samples: int, dim: int) -> RBFKernel:
+    print('Running')
+    return RBFKernel(ard_num_dims=dim, batch_shape=torch.Size([num_samples]))
 
 
 def _get_single_task_gpytorch_model(
@@ -48,7 +54,6 @@ def _get_single_task_gpytorch_model(
         raise NotImplementedError(
             "Fidelity MF-GP models are not currently supported with MCMC!"
         )
-
     num_mcmc_samples = num_samples // thinning
     covar_modules = [
         _get_rbf_kernel(num_samples=num_mcmc_samples, dim=Xs[0].shape[-1])
@@ -69,6 +74,64 @@ def _get_single_task_gpytorch_model(
         )
         for X, Y, Yvar, covar_module in zip(Xs, Ys, Yvars, covar_modules)
     ]
+    model = ModelListGP(*models)
+    model.to(Xs[0])
+    return model
+
+
+def _get_active_learning_gpytorch_model(
+    Xs: List[Tensor],
+    Ys: List[Tensor],
+    Yvars: List[Tensor],
+    task_features: List[int],
+    fidelity_features: List[int],
+    state_dict: Optional[Dict[str, Tensor]] = None,
+    num_samples: int = 512,
+    thinning: int = 16,
+    use_input_warping: bool = False,
+    gp_kernel: str = "rbf",
+    **kwargs: Any,
+) -> ModelListGP:
+    r"""Instantiates a batched GPyTorchModel(ModelListGP) based on the given data.
+    The model fitting is based on MCMC and is run separately using pyro. The MCMC
+    samples will be loaded into the model instantiated here afterwards.
+
+    Returns:
+        A ModelListGP.
+    """
+    if len(task_features) > 0:
+        raise NotImplementedError("Currently do not support MT-GP models with MCMC!")
+    if len(fidelity_features) > 0:
+        raise NotImplementedError(
+            "Fidelity MF-GP models are not currently supported with MCMC!"
+        )
+    num_mcmc_samples = num_samples // thinning
+    covar_modules = [
+        _get_rbf_noscale_kernel(num_samples=num_mcmc_samples, dim=Xs[0].shape[-1])
+        if gp_kernel == "rbf"
+        else None
+        for _ in range(len(Xs))
+    ]
+
+    models = [
+        _get_model(
+            X=X.unsqueeze(0).expand(num_mcmc_samples, X.shape[0], -1),
+            Y=Y.unsqueeze(0).expand(num_mcmc_samples, Y.shape[0], -1),
+            Yvar=Yvar.unsqueeze(0).expand(num_mcmc_samples, Yvar.shape[0], -1),
+            fidelity_features=fidelity_features,
+            use_input_warping=use_input_warping,
+            covar_module=covar_module,
+            mean_module=ZeroMean(),
+            **kwargs,
+        )
+        for X, Y, Yvar, covar_module in zip(Xs, Ys, Yvars, covar_modules)
+    ]
+    for model in models:
+        # to make model.subset_output() work
+        model._subset_batch_dict = {
+            "likelihood.noise_covar.raw_noise": -2,
+            "covar_module.raw_lengthscale": -3,
+        }
     model = ModelListGP(*models)
     model.to(Xs[0])
     return model
@@ -174,10 +237,7 @@ def postprocess_saas_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
     return samples
 
 
-def postprocess_bayesian_al(samples: Dict[str, Tensor], mu: float = 0.0, outputscale: float = 1.0) -> Dict[str, Tensor]:
-    num_samples = samples['noise'].shape[0]
-    samples['mean'] = mu * torch.ones(num_samples)
-    samples['outputscale'] = outputscale * torch.ones(num_samples)
+def postprocess_bayesian_al_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
     return samples
 
 
@@ -185,6 +245,7 @@ def postprocess_bayesian_al(samples: Dict[str, Tensor], mu: float = 0.0, outputs
 #  to avoid runtime subscripting errors.
 def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None:
     """Load MCMC samples into GPyTorchModel."""
+
     if "noise" in mcmc_samples:
         model.likelihood.noise_covar.noise = (
             mcmc_samples["noise"]
@@ -193,26 +254,36 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .view(model.likelihood.noise_covar.noise.shape)  # pyre-ignore
             .clamp_min(MIN_INFERRED_NOISE_LEVEL)
         )
-    model.covar_module.base_kernel.lengthscale = (
-        mcmc_samples["lengthscale"]
-        .detach()
-        .clone()
-        .view(model.covar_module.base_kernel.lengthscale.shape)  # pyre-ignore
-    )
-    model.covar_module.outputscale = (  # pyre-ignore
-        mcmc_samples["outputscale"]
-        .detach()
-        .clone()
-        # pyre-fixme[16]: Item `Tensor` of `Union[Tensor, Module]` has no attribute
-        #  `outputscale`.
-        .view(model.covar_module.outputscale.shape)
-    )
-    model.mean_module.constant.data = (
-        mcmc_samples["mean"]
-        .detach()
-        .clone()
-        .view(model.mean_module.constant.shape)  # pyre-ignore
-    )
+    if hasattr(model.covar_module, 'base_kernel'): 
+        model.covar_module.base_kernel.lengthscale = (
+            mcmc_samples["lengthscale"]
+            .detach()
+            .clone()
+            .view(model.covar_module.base_kernel.lengthscale.shape)  # pyre-ignore
+        )
+    else:
+        model.covar_module.lengthscale = (
+            mcmc_samples["lengthscale"]
+            .detach()
+            .clone()
+            .view(model.covar_module.lengthscale.shape)  # pyre-ignore
+        )
+    if "outputscale" in mcmc_samples:
+        model.covar_module.outputscale = (  # pyre-ignore
+            mcmc_samples["outputscale"]
+            .detach()
+            .clone()
+            # pyre-fixme[16]: Item `Tensor` of `Union[Tensor, Module]` has no attribute
+            #  `outputscale`.
+            .view(model.covar_module.outputscale.shape)
+        )
+    if "mean" in mcmc_samples:
+        model.mean_module.constant.data = (
+            mcmc_samples["mean"]
+            .detach()
+            .clone()
+            .view(model.mean_module.constant.shape)  # pyre-ignore
+        )
     if "c0" in mcmc_samples:
         model.input_transform._set_concentration(  # pyre-ignore
             i=0,
@@ -254,14 +325,6 @@ def pyro_sample_al_lengthscales(dim, mu: float = 0, var: float = 3.0, **tkwargs:
     )
 
 
-def pyro_sample_al_outputscale(**tkwargs: Any) -> Tensor:
-    return Tensor([1.0]).to(**tkwargs)
-
-
-def pyro_sample_al_mean(**tkwargs: Any) -> Tensor:
-    return Tensor([0.0]).to(**tkwargs)
-
-
 PRIOR_REGISTRY = {
     'SAAS': {
         'parameter_priors':
@@ -277,34 +340,34 @@ PRIOR_REGISTRY = {
     'BAL': {
         'parameter_priors':
             {
-                'outputscale_func': pyro_sample_al_outputscale,
-                'mean_func': pyro_sample_al_mean,
+                'outputscale_func': None,
+                'mean_func': None,
                 'noise_func': pyro_sample_al_noise,
                 'lengthscale_func': pyro_sample_al_lengthscales,
                 'input_warping_func': None,
             },
-            'postprocessing': postprocess_bayesian_al
+            'postprocessing': postprocess_bayesian_al_samples
     },
     'BO': {
         'parameter_priors':
             {
-                'outputscale_func': pyro_sample_al_outputscale,
-                'mean_func': pyro_sample_al_mean,
+                'outputscale_func': None,
+                'mean_func': None,
                 'noise_func': pyro_sample_al_noise,
                 'lengthscale_func': pyro_sample_al_lengthscales,
                 'input_warping_func': None,
             },
-            'postprocessing': postprocess_bayesian_al
+            'postprocessing': postprocess_bayesian_al_samples
     },
     'FITBO': {
         'parameter_priors':
             {
-                'outputscale_func': pyro_sample_al_outputscale,
-                'mean_func': pyro_sample_al_mean,
+                'outputscale_func': None,
+                'mean_func': None,
                 'noise_func': pyro_sample_al_noise,
                 'lengthscale_func': pyro_sample_al_lengthscales,
                 'input_warping_func': None,
             },
-            'postprocessing': postprocess_bayesian_al
-    }
+            'postprocessing': postprocess_bayesian_al_samples
+    },
 }

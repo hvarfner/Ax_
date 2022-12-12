@@ -58,6 +58,7 @@ from ax.models.torch.botorch_moo_defaults import get_NEHVI, pareto_frontier_eval
 from ax.models.torch.frontier_utils import TFrontierEvaluator
 from ax.models.torch.fully_bayesian_model_utils import (
     _get_single_task_gpytorch_model,
+    _get_active_learning_gpytorch_model,
     load_mcmc_samples_to_model,
     pyro_sample_input_warping,
     pyro_sample_mean,
@@ -227,12 +228,22 @@ def single_task_pyro_model(
     Yvar = Yvar.view(-1)
     tkwargs = {"dtype": X.dtype, "device": X.device}
     dim = X.shape[-1]
+
+    # For some active learning experiments, we disregard outputscale and mean function
     # TODO: test alternative outputscale priors
-    outputscale = outputscale_func(**tkwargs)
-    mean = mean_func(**tkwargs)
+    if outputscale_func:
+        outputscale = outputscale_func(**tkwargs)
+    else:
+        outputscale = torch.Tensor([1])
+    if mean_func:
+        mean = mean_func(**tkwargs)
+    else:
+        mean = torch.Tensor([0])
+
     if torch.isnan(Yvar).all():
         # infer noise level
         noise = noise_func(**tkwargs)
+
     else:
         noise = Yvar.clamp_min(MIN_OBSERVED_NOISE_LEVEL)
     # pyre-fixme[6]: For 2nd param expected `float` but got `Union[device, dtype]`.
@@ -356,6 +367,7 @@ def get_and_fit_model_mcmc(
     metric_names: List[str],
     parameter_priors: Dict[str, Optional[Any]],
     postprocessing: Dict[str, Optional[Any]],
+    get_gpytorch_model: Callable,
     state_dict: Optional[Dict[str, Tensor]] = None,
     refit_model: bool = True,
     use_input_warping: bool = False,
@@ -393,7 +405,7 @@ def get_and_fit_model_mcmc(
         verbose=verbose,
         pyro_model=with_parameter_priors(single_task_pyro_model, parameter_priors),
         postprocessing=postprocessing,
-        get_gpytorch_model=_get_single_task_gpytorch_model,
+        get_gpytorch_model=get_gpytorch_model,
     )
     for i, mcmc_samples in enumerate(mcmc_samples_list):
         load_mcmc_samples_to_model(model=model.models[i], mcmc_samples=mcmc_samples)
@@ -555,7 +567,7 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
 
     def __init__(
         self,
-        model_constructor: TModelConstructor = get_and_fit_model_mcmc,
+        model_constructor: TModelConstructor = _get_single_task_gpytorch_model,
         model_predictor: TModelPredictor = predict_from_model_mcmc,
         acqf_constructor: TAcqfConstructor = get_NEI,
         # pyre-fixme[9]: acqf_optimizer declared/used type mismatch
@@ -610,9 +622,11 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
         """
         BotorchModel.__init__(
             self,
-            model_constructor=with_prior(PRIOR_REGISTRY[prior_type], model_constructor),
+            model_constructor=with_prior(PRIOR_REGISTRY[prior_type], partial(
+                get_and_fit_model_mcmc, get_gpytorch_model=model_constructor)),  # TODO make this into one thing, not two partials
             model_predictor=model_predictor,
-            acqf_constructor=partial(get_fully_bayesian_acqf, acqf_constructor=acqf_constructor),
+            acqf_constructor=partial(get_fully_bayesian_acqf,
+                                     acqf_constructor=acqf_constructor),
             acqf_optimizer=acqf_optimizer,
             best_point_recommender=best_point_recommender,
             refit_on_cv=refit_on_cv,
