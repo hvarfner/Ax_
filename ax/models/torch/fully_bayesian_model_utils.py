@@ -24,7 +24,6 @@ def _get_rbf_kernel(num_samples: int, dim: int) -> ScaleKernel:
 
 
 def _get_rbf_noscale_kernel(num_samples: int, dim: int) -> RBFKernel:
-    print('Running')
     return RBFKernel(ard_num_dims=dim, batch_shape=torch.Size([num_samples]))
 
 

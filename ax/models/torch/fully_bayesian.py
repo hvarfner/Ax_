@@ -463,8 +463,7 @@ def run_inference(
         rank=rank,
     )
     samples = mcmc.get_samples()
-    samples = postprocessing(samples)
-
+    
     if verbose:
         orig_std_out = sys.stdout.write
         sys.stdout.write = logger.info  # pyre-fixme[8]
@@ -474,7 +473,8 @@ def run_inference(
     # thin
     for k, v in samples.items():
         samples[k] = v[::thinning]  # apply thinning
-    # compute the true lengthscales and get rid of the temporary variables
+    samples = postprocessing(samples)
+# compute the true lengthscales and get rid of the temporary variables
     return samples
 
 
