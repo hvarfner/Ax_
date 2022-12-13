@@ -449,6 +449,7 @@ def run_inference(
     )
     mcmc = MCMC(
         kernel,
+        num_chains=1,
         warmup_steps=warmup_steps,
         num_samples=num_samples,
         disable_progbar=disable_progbar,
