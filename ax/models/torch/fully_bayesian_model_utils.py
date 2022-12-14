@@ -13,6 +13,7 @@ from botorch.models.gpytorch import GPyTorchModel
 from botorch.models.model_list_gp_regression import ModelListGP
 from gpytorch.kernels import RBFKernel, ScaleKernel
 from gpytorch.means import ZeroMean
+from botorch.models.gp_regression import SquareRootSingleTaskGP
 from torch import Tensor
 
 
@@ -136,6 +137,110 @@ def _get_active_learning_gpytorch_model(
     return model
 
 
+def _get_square_root_gpytorch_model(
+    Xs: List[Tensor],
+    Ys: List[Tensor],
+    Yvars: List[Tensor],
+    task_features: List[int],
+    fidelity_features: List[int],
+    state_dict: Optional[Dict[str, Tensor]] = None,
+    num_samples: int = 512,
+    thinning: int = 16,
+    use_input_warping: bool = False,
+    gp_kernel: str = "matern",
+    **kwargs: Any,
+) -> ModelListGP:
+    r"""Instantiates a batched GPyTorchModel(ModelListGP) based on the given data.
+    The model fitting is based on MCMC and is run separately using pyro. The MCMC
+    samples will be loaded into the model instantiated here afterwards.
+
+    Returns:
+        A ModelListGP.
+    """
+    if len(task_features) > 0:
+        raise NotImplementedError("Currently do not support MT-GP models with MCMC!")
+    if len(fidelity_features) > 0:
+        raise NotImplementedError(
+            "Fidelity MF-GP models are not currently supported with MCMC!"
+        )
+    num_mcmc_samples = num_samples // thinning
+    covar_modules = [
+        _get_rbf_kernel(num_samples=num_mcmc_samples, dim=Xs[0].shape[-1])
+        if gp_kernel == "rbf"
+        else None
+        for _ in range(len(Xs))
+    ]
+
+    models = [
+        _get_square_root_model(
+            X=X.unsqueeze(0).expand(num_mcmc_samples, X.shape[0], -1),
+            Y=Y.unsqueeze(0).expand(num_mcmc_samples, Y.shape[0], -1),
+            Yvar=Yvar.unsqueeze(0).expand(num_mcmc_samples, Yvar.shape[0], -1),
+            fidelity_features=fidelity_features,
+            use_input_warping=use_input_warping,
+            covar_module=covar_module,
+            **kwargs,
+        )
+        for X, Y, Yvar, covar_module in zip(Xs, Ys, Yvars, covar_modules)
+    ]
+    model = ModelListGP(*models)
+    model.to(Xs[0])
+    return model
+
+
+def _get_square_root_model(
+    X: Tensor,
+    Y: Tensor,
+    Yvar: Tensor,
+    task_feature: Optional[int] = None,
+    fidelity_features: Optional[List[int]] = None,
+    use_input_warping: bool = False,
+    **kwargs: Any,
+) -> GPyTorchModel:
+    """Instantiate a model of type depending on the input data.
+
+    Args:
+        X: A `n x d` tensor of input features.
+        Y: A `n x m` tensor of input observations.
+        Yvar: A `n x m` tensor of input variances (NaN if unobserved).
+        task_feature: The index of the column pertaining to the task feature
+            (if present).
+        fidelity_features: List of columns of X that are fidelity parameters.
+
+    Returns:
+        A GPyTorchModel (unfitted).
+    """
+    Yvar = Yvar.clamp_min(MIN_OBSERVED_NOISE_LEVEL)
+    is_nan = torch.isnan(Yvar)
+    any_nan_Yvar = torch.any(is_nan)
+    all_nan_Yvar = torch.all(is_nan)
+    if any_nan_Yvar and not all_nan_Yvar:
+        if task_feature:
+            # TODO (jej): Replace with inferred noise before making perf judgements.
+            Yvar[Yvar != Yvar] = MIN_OBSERVED_NOISE_LEVEL
+        else:
+            raise ValueError(
+                "Mix of known and unknown variances indicates valuation function "
+                "errors. Variances should all be specified, or none should be."
+            )
+    if use_input_warping:
+        warp_tf = get_warping_transform(
+            d=X.shape[-1],
+            task_feature=task_feature,
+            batch_shape=X.shape[:-2],
+        )
+    else:
+        warp_tf = None
+    if fidelity_features is not None:
+        raise ValueError('SquareRootGP is not available with multi-fidelity.')
+    elif task_feature is None and all_nan_Yvar:
+        gp = SquareRootSingleTaskGP(
+            train_X=X, train_Y=Y, input_transform=warp_tf, **kwargs)
+    elif task_feature is None:
+        raise ValueError('SquareRootGP is not available with fixed noise.')
+    return gp
+
+
 def pyro_sample_outputscale(
     concentration: float = 2.0,
     rate: float = 0.15,
@@ -236,6 +341,13 @@ def postprocess_saas_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
     return samples
 
 
+def postprocess_squareroot_gp_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    if not 'sqrt_eta' in samples.keys():
+        raise ValueError('For a square root GP, there must be samples of "sqrt_eta".'
+                         f'Now, there is only {list(samples.keys())}')
+    return samples
+
+
 def postprocess_bayesian_al_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
     return samples
 
@@ -253,7 +365,7 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .view(model.likelihood.noise_covar.noise.shape)  # pyre-ignore
             .clamp_min(MIN_INFERRED_NOISE_LEVEL)
         )
-    if hasattr(model.covar_module, 'base_kernel'): 
+    if hasattr(model.covar_module, 'base_kernel'):
         model.covar_module.base_kernel.lengthscale = (
             mcmc_samples["lengthscale"]
             .detach()
@@ -283,6 +395,14 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .clone()
             .view(model.mean_module.constant.shape)  # pyre-ignore
         )
+    if "sqrt_eta" in mcmc_samples:
+        model.sqrt_eta = (
+            mcmc_samples["mean"]
+            .detach()
+            .clone()
+            # pyre-ignore
+        )
+        print('Remember to check the shape of sqrt eta in FBMU!')
     if "c0" in mcmc_samples:
         model.input_transform._set_concentration(  # pyre-ignore
             i=0,
@@ -300,6 +420,17 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .clone()
             .view(model.input_transform.concentration1.shape),  # pyre-ignore
         )
+
+
+def pyro_sample_sqrt_eta(mu: float = 0, var: float = 0.1, **tkwargs: Any) -> Tensor:
+    return pyro.sample(
+        "sqrt_eta",
+        # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
+        pyro.distributions.LogNormal(
+            torch.tensor(mu, **tkwargs),
+            torch.tensor(var ** 0.5, **tkwargs),
+        ),
+    )
 
 
 def pyro_sample_al_noise(mu: float = 0, var: float = 3.0, **tkwargs: Any) -> Tensor:
@@ -327,46 +458,47 @@ def pyro_sample_al_lengthscales(dim, mu: float = 0, var: float = 3.0, **tkwargs:
 PRIOR_REGISTRY = {
     'SAAS': {
         'parameter_priors':
-            {
-                'outputscale_func': pyro_sample_outputscale,
-                'mean_func': pyro_sample_mean,
-                'noise_func': pyro_sample_noise,
-                'lengthscale_func': pyro_sample_saas_lengthscales,
-                'input_warping_func': pyro_sample_input_warping,
-            },
-            'postprocessing': postprocess_saas_samples
+        {
+            'outputscale_func': pyro_sample_outputscale,
+            'mean_func': pyro_sample_mean,
+            'noise_func': pyro_sample_noise,
+            'lengthscale_func': pyro_sample_saas_lengthscales,
+            'input_warping_func': pyro_sample_input_warping,
+        },
+        'postprocessing': postprocess_saas_samples
     },
     'BAL': {
         'parameter_priors':
-            {
-                'outputscale_func': None,
-                'mean_func': None,
-                'noise_func': pyro_sample_al_noise,
-                'lengthscale_func': pyro_sample_al_lengthscales,
-                'input_warping_func': None,
-            },
-            'postprocessing': postprocess_bayesian_al_samples
+        {
+            'outputscale_func': None,
+            'mean_func': None,
+            'noise_func': pyro_sample_al_noise,
+            'lengthscale_func': pyro_sample_al_lengthscales,
+            'input_warping_func': None,
+        },
+        'postprocessing': postprocess_bayesian_al_samples
     },
     'BO': {
         'parameter_priors':
-            {
-                'outputscale_func': None,
-                'mean_func': None,
-                'noise_func': pyro_sample_al_noise,
-                'lengthscale_func': pyro_sample_al_lengthscales,
-                'input_warping_func': None,
-            },
-            'postprocessing': postprocess_bayesian_al_samples
+        {
+            'outputscale_func': None,
+            'mean_func': None,
+            'noise_func': pyro_sample_al_noise,
+            'lengthscale_func': pyro_sample_al_lengthscales,
+            'input_warping_func': None,
+        },
+        'postprocessing': postprocess_bayesian_al_samples
     },
-    'FITBO': {
+    'SquareRoot': {
         'parameter_priors':
-            {
-                'outputscale_func': None,
-                'mean_func': None,
-                'noise_func': pyro_sample_al_noise,
-                'lengthscale_func': pyro_sample_al_lengthscales,
-                'input_warping_func': None,
-            },
-            'postprocessing': postprocess_bayesian_al_samples
+        {
+            'outputscale_func': None,
+            'mean_func': None,
+            'noise_func': pyro_sample_al_noise,
+            'lengthscale_func': pyro_sample_al_lengthscales,
+            'sqrt_eta_func': pyro_sample_sqrt_eta,
+            'input_warping_func': None,
+        },
+        'postprocessing': postprocess_bayesian_al_samples
     },
 }

@@ -89,10 +89,17 @@ SAAS_DEPRECATION_MSG = (
 )
 
 
-def with_prior(prior_dict: Dict[str, Optional[Any]], constructor: TModelConstructor) -> TModelConstructor:
-    return partial(constructor, **prior_dict)
+# Sets the model, parameters and sampling procedure (in the form of a pyro model) for the fully bayesian GP
+def set_prior_and_models(
+    constructor: TModelConstructor,
+    prior_dict: Dict[str, Optional[Any]],
+    gpytorch_model: TModelConstructor,
+    pyro_model: Callable
+) -> TModelConstructor:
+    return partial(constructor, get_gpytorch_model=gpytorch_model, pyro_model=pyro_model, **prior_dict)
 
 
+# defines the priors for each parameter in the pyro model, and their required postprocessing steps
 def with_parameter_priors(model_spec: Callable, parameter_dict: Dict[str, Optional[Any]]) -> Callable:
     return partial(model_spec, **parameter_dict)
 
@@ -192,8 +199,97 @@ def rbf_kernel(X: Tensor, Z: Tensor, lengthscale: Tensor) -> Tensor:
     return torch.exp(-0.5 * (dist**2))
 
 
-def fitbo_pyro_model(args):
-    pass
+def square_root_pyro_model(X: Tensor,
+                           Y: Tensor,
+                           Yvar: Tensor,
+                           mean_func: Callable,
+                           noise_func: Callable,
+                           outputscale_func: Callable,
+                           lengthscale_func: Callable,
+                           input_warping_func: Callable,
+                           sqrt_eta_func: Callable,
+                           use_input_warping: bool = False,
+                           eps: float = 1e-7,
+                           gp_kernel: str = "matern",
+                           task_feature: Optional[int] = None,
+                           rank: Optional[int] = None,
+
+                           ) -> None:
+    r"""Instantiates a single task pyro model for running fully bayesian inference.
+
+    Args:
+        X: A `n x d` tensor of input parameters.
+        Y: A `n x 1` tensor of output.
+        Yvar: A `n x 1` tensor of observed noise. NOTE: This noise is on the
+        transormation G, and not on the original output Y.
+        use_input_warping: A boolean indicating whether to use input warping
+        task_feature: Column index of task feature in X.
+        gp_kernel: kernel name. Currently only two kernels are supported: "matern" for
+            Matern Kernel and "rbf" for RBFKernel.
+        rank: num of latent task features to learn for task covariance.
+    """
+    Y = Y.view(-1)
+    Yvar = Yvar.view(-1)
+    tkwargs = {"dtype": X.dtype, "device": X.device}
+    dim = X.shape[-1]
+
+    # For some active learning experiments, we disregard outputscale and mean function
+    # TODO: test alternative outputscale priors
+    if outputscale_func:
+        outputscale = outputscale_func(**tkwargs)
+    else:
+        outputscale = torch.Tensor([1])
+    if mean_func:
+        mean = mean_func(**tkwargs)
+    else:
+        mean = torch.Tensor([0])
+
+    if torch.isnan(Yvar).all():
+        # infer noise level
+        noise = noise_func(**tkwargs)
+
+    else:
+        noise = Yvar.clamp_min(MIN_OBSERVED_NOISE_LEVEL)
+    # pyre-fixme[6]: For 2nd param expected `float` but got `Union[device, dtype]`.
+    lengthscale = lengthscale_func(dim=dim, **tkwargs)
+
+    # transform inputs through kumaraswamy cdf
+    if use_input_warping:
+        c0, c1 = input_warping_func(dim=dim, **tkwargs)
+        # unnormalize X from [0, 1] to [eps, 1-eps]
+        X = (X * (1 - 2 * eps) + eps).clamp(eps, 1 - eps)
+        X_tf = 1 - torch.pow((1 - torch.pow(X, c1)), c0)
+    else:
+        X_tf = X
+
+    # pyre-fixme[6]: For 2nd param expected `float` but got `Union[device, dtype]`.
+    eta_y_diff = eta_func(**tkwargs)
+    eta = Y.max(dim=0) + eta_y_diff
+    # NOTE keep the noise in mind here. The noise is on G. Moreover, eta is the
+    # global maximum (since BOTorch maximizes by default). As such, almost all values
+    # should be negative.
+    G_unnorm = -torch.sqrt(2 * (eta - Y))
+
+    G = (G_unnorm - G_unnorm.mean(dim=0)) / G_unnorm.std(dim=0)
+
+    # compute kernel
+    if gp_kernel == "matern":
+        k = matern_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
+    elif gp_kernel == "rbf":
+        k = rbf_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
+    else:
+        raise ValueError(f"Expected kernel to be 'rbf' or 'matern', got {gp_kernel}")
+
+    # add noise
+    k = outputscale * k + noise * \
+        torch.eye(X.shape[0], dtype=X.dtype, device=X.device)
+
+    _psd_safe_pyro_mvn_sample(
+        name="Y",
+        loc=mean.view(-1).expand(X.shape[0]),
+        covariance_matrix=k,
+        obs=G,
+    )
 
 
 def single_task_pyro_model(
@@ -285,6 +381,7 @@ def _get_model_mcmc_samples(
     metric_names: List[str],
     pyro_model: Callable,
     postprocessing: Callable,
+    get_gpytorch_model: Callable,
     state_dict: Optional[Dict[str, Tensor]] = None,
     refit_model: bool = True,
     use_input_warping: bool = False,
@@ -298,7 +395,6 @@ def _get_model_mcmc_samples(
     verbose: bool = False,
     # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
     # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-    get_gpytorch_model: Callable = _get_single_task_gpytorch_model,
     rank: Optional[int] = 1,
     **kwargs: Any,
     # pyre-fixme[24]: Generic type `dict` expects 2 type parameters, use `typing.Dict`
@@ -368,6 +464,7 @@ def get_and_fit_model_mcmc(
     parameter_priors: Dict[str, Optional[Any]],
     postprocessing: Dict[str, Optional[Any]],
     get_gpytorch_model: Callable,
+    pyro_model: Callable,
     state_dict: Optional[Dict[str, Tensor]] = None,
     refit_model: bool = True,
     use_input_warping: bool = False,
@@ -385,6 +482,7 @@ def get_and_fit_model_mcmc(
     fit the model based on MCMC in pyro. The batch dimension corresponds to sampled
     hyperparameters from MCMC.
     """
+    print(get_gpytorch_model)
     model, mcmc_samples_list = _get_model_mcmc_samples(
         Xs=Xs,
         Ys=Ys,
@@ -403,7 +501,7 @@ def get_and_fit_model_mcmc(
         disable_progbar=disable_progbar,
         gp_kernel=gp_kernel,
         verbose=verbose,
-        pyro_model=with_parameter_priors(single_task_pyro_model, parameter_priors),
+        pyro_model=with_parameter_priors(pyro_model, parameter_priors),
         postprocessing=postprocessing,
         get_gpytorch_model=get_gpytorch_model,
     )
@@ -464,7 +562,7 @@ def run_inference(
         rank=rank,
     )
     samples = mcmc.get_samples()
-    
+
     if verbose:
         orig_std_out = sys.stdout.write
         sys.stdout.write = logger.info  # pyre-fixme[8]
@@ -568,12 +666,14 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
 
     def __init__(
         self,
-        model_constructor: TModelConstructor = _get_single_task_gpytorch_model,
+        model_constructor: TModelConstructor, # REMOVED FOR CLARITY = _get_single_task_gpytorch_model,
+        
         model_predictor: TModelPredictor = predict_from_model_mcmc,
         acqf_constructor: TAcqfConstructor = get_NEI,
         # pyre-fixme[9]: acqf_optimizer declared/used type mismatch
         acqf_optimizer: TOptimizer = scipy_optimizer,
         best_point_recommender: TBestPointRecommender = recommend_best_observed_point,
+        pyro_model: Callable = single_task_pyro_model,
         refit_on_cv: bool = False,
         refit_on_update: bool = True,
         warm_start_refitting: bool = True,
@@ -623,8 +723,12 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
         """
         BotorchModel.__init__(
             self,
-            model_constructor=with_prior(PRIOR_REGISTRY[prior_type], partial(
-                get_and_fit_model_mcmc, get_gpytorch_model=model_constructor)),  # TODO make this into one thing, not two partials
+            model_constructor=set_prior_and_models(
+                get_and_fit_model_mcmc,
+                PRIOR_REGISTRY[prior_type],
+                gpytorch_model=model_constructor,
+                pyro_model=pyro_model
+            ),  # TODO make this into one thing, not two partials
             model_predictor=model_predictor,
             acqf_constructor=partial(get_fully_bayesian_acqf,
                                      acqf_constructor=acqf_constructor),
@@ -646,13 +750,15 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
 
 class FullyBayesianMOOBotorchModel(
     FullyBayesianBotorchModelMixin, MultiObjectiveBotorchModel
+
+
 ):
     r"""Fully Bayesian Model that uses qNEHVI.
 
     This includes support for using qNEHVI + SAASBO as in [Eriksson2021nas]_.
     """
 
-    @copy_doc(FullyBayesianBotorchModel.__init__)
+    @ copy_doc(FullyBayesianBotorchModel.__init__)
     def __init__(
         self,
         model_constructor: TModelConstructor = get_and_fit_model_mcmc,
