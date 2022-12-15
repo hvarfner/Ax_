@@ -415,7 +415,7 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
         )
 
 
-def pyro_sample_delta_eta(mu: float = 0, var: float = 0.1, **tkwargs: Any) -> Tensor:
+def pyro_sample_delta_eta(mu: float = -1, var: float = 0.25, **tkwargs: Any) -> Tensor:
     return pyro.sample(
         "delta_eta",
         # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
@@ -448,6 +448,28 @@ def pyro_sample_al_lengthscales(dim, mu: float = 0, var: float = 3.0, **tkwargs:
     )
 
 
+def pyro_sample_bo_lengthscales(dim, **tkwargs: Any) -> Tensor:
+    return pyro.sample(
+        "lengthscale",
+        # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
+        pyro.distributions.Gamma(
+            torch.tensor([3.0] * dim, **tkwargs),
+            torch.tensor([6.0] * dim, **tkwargs),
+        ),
+    )
+
+
+def pyro_sample_bo_noise(**tkwargs: Any) -> Tensor:
+    return pyro.sample(
+        "noise",
+        # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
+        pyro.distributions.Gamma(
+            torch.tensor(1.1, **tkwargs),
+            torch.tensor(0.05, **tkwargs),
+        ),
+    )
+
+
 PRIOR_REGISTRY = {
     'SAAS': {
         'parameter_priors':
@@ -474,8 +496,8 @@ PRIOR_REGISTRY = {
     'BO': {
         'parameter_priors':
         {
-            'outputscale_func': None,
-            'mean_func': None,
+            'outputscale_func': pyro_sample_outputscale,
+            'mean_func': pyro_sample_mean,
             'noise_func': pyro_sample_al_noise,
             'lengthscale_func': pyro_sample_al_lengthscales,
             'input_warping_func': None,
@@ -485,7 +507,7 @@ PRIOR_REGISTRY = {
     'SCoreBO': {
         'parameter_priors':
         {
-            'outputscale_func': None,
+            'outputscale_func': pyro_sample_outputscale,
             'mean_func': None,
             'noise_func': pyro_sample_al_noise,
             'lengthscale_func': pyro_sample_al_lengthscales,

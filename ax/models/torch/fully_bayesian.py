@@ -36,6 +36,7 @@ from functools import partial
 
 import numpy as np
 import torch
+from torch.linalg import inv
 from pyro.distributions import Distribution
 from ax.exceptions.core import AxError
 from ax.models.torch.botorch import (
@@ -78,6 +79,7 @@ from botorch.models.model import Model
 from botorch.models.model_list_gp_regression import ModelListGP
 from botorch.posteriors.gpytorch import GPyTorchPosterior
 from torch import Tensor
+from linear_operator.utils.cholesky import psd_safe_cholesky
 
 logger: Logger = get_logger(__name__)
 
@@ -269,26 +271,34 @@ def square_root_pyro_model(X: Tensor,
     # global maximum (since BOTorch maximizes by default). As such, almost all values
     # should be negative.
     G_unnorm = -torch.sqrt(2 * (eta - Y))
-
-    G = (G_unnorm - G_unnorm.mean(dim=0)) / G_unnorm.std(dim=0)
-
+    G = ((G_unnorm - G_unnorm.mean(dim=0)) / G_unnorm.std(dim=0)).unsqueeze(-1)
+    # Not the same thing, probably need to do the entire transformation in here!
     # compute kernel
     if gp_kernel == "matern":
-        k = matern_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
+        k_noiseless = matern_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
     elif gp_kernel == "rbf":
-        k = rbf_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
+        k_noiseless = rbf_kernel(X=X_tf, Z=X_tf, lengthscale=lengthscale)
     else:
         raise ValueError(f"Expected kernel to be 'rbf' or 'matern', got {gp_kernel}")
 
     # add noise
-    k = outputscale * k + noise * \
+    # TODO I think this should be noiseless in the context of SCorEBO
+    k = outputscale * k_noiseless + noise * \
         torch.eye(X.shape[0], dtype=X.dtype, device=X.device)
-
+    
+    #THIS IS THE EXTRA STUFF that is required for sqrtGP
+    L_cholesky = psd_safe_cholesky(k)
+    L_inv = inv(L_cholesky)
+    inv_k = torch.matmul(L_inv.T, L_inv)
+    mean_G = outputscale * torch.matmul(torch.matmul(k_noiseless, inv_k), G)
+    cov_f = torch.matmul(mean_G.T, mean_G) * k
+    mean_f = eta - 0.5 * torch.pow(mean_G, 2)
+    
     _psd_safe_pyro_mvn_sample(
         name="Y",
-        loc=mean.view(-1).expand(X.shape[0]),
-        covariance_matrix=k,
-        obs=G,
+        loc=torch.zeros_like(mean_f.view(-1).expand(X.shape[0])),
+        covariance_matrix=cov_f,
+        obs=Y,
     )
 
 
@@ -482,7 +492,6 @@ def get_and_fit_model_mcmc(
     fit the model based on MCMC in pyro. The batch dimension corresponds to sampled
     hyperparameters from MCMC.
     """
-    print(get_gpytorch_model)
     model, mcmc_samples_list = _get_model_mcmc_samples(
         Xs=Xs,
         Ys=Ys,
@@ -557,10 +566,11 @@ def run_inference(
         Y,
         Yvar,
         use_input_warping=use_input_warping,
-        gp_kernel=gp_kernel,
+        gp_kernel=gp_kernel, 
         task_feature=task_feature,
         rank=rank,
     )
+    mcmc.summary()
     samples = mcmc.get_samples()
 
     if verbose:
