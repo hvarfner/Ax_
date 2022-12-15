@@ -207,7 +207,7 @@ def square_root_pyro_model(X: Tensor,
                            outputscale_func: Callable,
                            lengthscale_func: Callable,
                            input_warping_func: Callable,
-                           sqrt_eta_func: Callable,
+                           eta_func: Callable,
                            use_input_warping: bool = False,
                            eps: float = 1e-7,
                            gp_kernel: str = "matern",
@@ -264,7 +264,7 @@ def square_root_pyro_model(X: Tensor,
 
     # pyre-fixme[6]: For 2nd param expected `float` but got `Union[device, dtype]`.
     eta_y_diff = eta_func(**tkwargs)
-    eta = Y.max(dim=0) + eta_y_diff
+    eta = torch.max(Y) + eta_y_diff
     # NOTE keep the noise in mind here. The noise is on G. Moreover, eta is the
     # global maximum (since BOTorch maximizes by default). As such, almost all values
     # should be negative.
@@ -667,13 +667,12 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
     def __init__(
         self,
         model_constructor: TModelConstructor, # REMOVED FOR CLARITY = _get_single_task_gpytorch_model,
-        
+        pyro_model: Callable, ## = single_task_pyro_model,
         model_predictor: TModelPredictor = predict_from_model_mcmc,
         acqf_constructor: TAcqfConstructor = get_NEI,
         # pyre-fixme[9]: acqf_optimizer declared/used type mismatch
         acqf_optimizer: TOptimizer = scipy_optimizer,
         best_point_recommender: TBestPointRecommender = recommend_best_observed_point,
-        pyro_model: Callable = single_task_pyro_model,
         refit_on_cv: bool = False,
         refit_on_update: bool = True,
         warm_start_refitting: bool = True,

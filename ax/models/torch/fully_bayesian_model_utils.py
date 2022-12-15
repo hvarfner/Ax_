@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pyro  # @manual=fbsource//third-party/pypi/pyro-ppl:pyro-ppl
 import torch
-from ax.models.torch.botorch_defaults import _get_model
-from botorch.models.gp_regression import MIN_INFERRED_NOISE_LEVEL
+from ax.models.torch.botorch_defaults import _get_model, MIN_OBSERVED_NOISE_LEVEL
+from botorch.models.fully_bayesian import MIN_INFERRED_NOISE_LEVEL
 from botorch.models.gpytorch import GPyTorchModel
 from botorch.models.model_list_gp_regression import ModelListGP
 from gpytorch.kernels import RBFKernel, ScaleKernel
@@ -231,7 +231,7 @@ def _get_square_root_model(
         )
     else:
         warp_tf = None
-    if fidelity_features is not None:
+    if len(fidelity_features) > 0:
         raise ValueError('SquareRootGP is not available with multi-fidelity.')
     elif task_feature is None and all_nan_Yvar:
         gp = SquareRootSingleTaskGP(
@@ -342,9 +342,6 @@ def postprocess_saas_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
 
 
 def postprocess_squareroot_gp_samples(samples: Dict[str, Tensor]) -> Dict[str, Tensor]:
-    if not 'sqrt_eta' in samples.keys():
-        raise ValueError('For a square root GP, there must be samples of "sqrt_eta".'
-                         f'Now, there is only {list(samples.keys())}')
     return samples
 
 
@@ -356,7 +353,11 @@ def postprocess_bayesian_al_samples(samples: Dict[str, Tensor]) -> Dict[str, Ten
 #  to avoid runtime subscripting errors.
 def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None:
     """Load MCMC samples into GPyTorchModel."""
-
+    if "delta_eta" in mcmc_samples:
+        Y_max = torch.max(model.train_targets)
+        delta_eta_onedim = mcmc_samples["delta_eta"].detach().clone()
+        delta_eta = delta_eta_onedim.unsqueeze(-1).unsqueeze(-1)
+        model.set_eta(delta_eta + Y_max)
     if "noise" in mcmc_samples:
         model.likelihood.noise_covar.noise = (
             mcmc_samples["noise"]
@@ -395,14 +396,6 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
             .clone()
             .view(model.mean_module.constant.shape)  # pyre-ignore
         )
-    if "sqrt_eta" in mcmc_samples:
-        model.sqrt_eta = (
-            mcmc_samples["mean"]
-            .detach()
-            .clone()
-            # pyre-ignore
-        )
-        print('Remember to check the shape of sqrt eta in FBMU!')
     if "c0" in mcmc_samples:
         model.input_transform._set_concentration(  # pyre-ignore
             i=0,
@@ -422,9 +415,9 @@ def load_mcmc_samples_to_model(model: GPyTorchModel, mcmc_samples: Dict) -> None
         )
 
 
-def pyro_sample_sqrt_eta(mu: float = 0, var: float = 0.1, **tkwargs: Any) -> Tensor:
+def pyro_sample_delta_eta(mu: float = 0, var: float = 0.1, **tkwargs: Any) -> Tensor:
     return pyro.sample(
-        "sqrt_eta",
+        "delta_eta",
         # pyre-fixme[16]: Module `distributions` has no attribute `Gamma`.
         pyro.distributions.LogNormal(
             torch.tensor(mu, **tkwargs),
@@ -489,16 +482,16 @@ PRIOR_REGISTRY = {
         },
         'postprocessing': postprocess_bayesian_al_samples
     },
-    'SquareRoot': {
+    'SCoreBO': {
         'parameter_priors':
         {
             'outputscale_func': None,
             'mean_func': None,
             'noise_func': pyro_sample_al_noise,
             'lengthscale_func': pyro_sample_al_lengthscales,
-            'sqrt_eta_func': pyro_sample_sqrt_eta,
+            'eta_func': pyro_sample_delta_eta,
             'input_warping_func': None,
         },
-        'postprocessing': postprocess_bayesian_al_samples
+        'postprocessing': postprocess_squareroot_gp_samples
     },
 }
