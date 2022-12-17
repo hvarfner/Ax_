@@ -15,6 +15,7 @@ from gpytorch.kernels import RBFKernel, ScaleKernel
 from gpytorch.means import ZeroMean
 from botorch.models.gp_regression import SquareRootSingleTaskGP
 from torch import Tensor
+from torch.distributions import MultivariateNormal
 
 
 def _get_rbf_kernel(num_samples: int, dim: int) -> ScaleKernel:
@@ -470,6 +471,74 @@ def pyro_sample_bo_noise(**tkwargs: Any) -> Tensor:
     )
 
 
+def slice_bo_prior(dim):
+    outputscale_mean = torch.Tensor([0])
+    noise_mean = torch.Tensor([0])
+    lengthscale_mean = torch.zeros(dim)
+    outputscale_variance = torch.Tensor([3])
+    noise_variance = torch.Tensor([3])
+    lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
+
+    means = torch.cat((outputscale_mean, noise_mean, lengthscale_mean), dim=0)
+    variances = torch.cat((outputscale_variance, noise_variance, lengthscale_variance), dim=0)
+    dist = MultivariateNormal(means, torch.diag(variances))
+    return dist
+
+
+def slice_al_prior(dim):
+    noise_mean = torch.Tensor([0])
+    lengthscale_mean = torch.zeros(dim)
+    noise_variance = torch.Tensor([3])
+    lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
+
+    means = torch.cat((noise_mean, lengthscale_mean), dim=0)
+    variances = torch.cat((noise_variance, lengthscale_variance), dim=0)
+    dist = MultivariateNormal(means, torch.diag(variances))
+    return dist
+
+
+def slice_sqrt_prior(dim):
+    eta_mean = torch.Tensor([-1])
+    outputscale_mean = torch.Tensor([0])
+    noise_mean = torch.Tensor([0])
+    lengthscale_mean = torch.zeros(dim)
+    eta_variance = torch.Tensor([0.25])
+    outputscale_variance = torch.Tensor([3])
+    noise_variance = torch.Tensor([3])
+    lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
+
+    means = torch.cat((outputscale_mean, noise_mean, lengthscale_mean), dim=0)
+    variances = torch.cat((outputscale_variance, noise_variance, lengthscale_variance), dim=0)
+    dist = MultivariateNormal(means, torch.diag(variances))
+    return dist
+
+
+def postprocess_sqrt_slice(hp_tensor):
+    samples = {}
+    samples['delta_eta'] = hp_tensor[:, 0]
+    samples['outputscale'] = hp_tensor[:, 1]
+    samples['noise'] = hp_tensor[:, 2]
+    samples['lengthscale'] = hp_tensor[3:, :]
+    return samples
+
+
+def postprocess_bo_slice(hp_tensor):
+    samples = {}
+    samples['outputscale'] = hp_tensor[:, 0]
+    samples['noise'] = hp_tensor[:, 1]
+    samples['lengthscale'] = hp_tensor[2:, :]
+    return samples
+
+    
+
+def postprocess_al_slice(hp_tensor):
+    samples = {}
+    samples['noise'] = hp_tensor[:, 0]
+    samples['lengthscale'] = hp_tensor[:, 1:]
+    return samples
+
+    
+
 PRIOR_REGISTRY = {
     'SAAS': {
         'parameter_priors':
@@ -515,5 +584,26 @@ PRIOR_REGISTRY = {
             'input_warping_func': None,
         },
         'postprocessing': postprocess_squareroot_gp_samples
+    },
+    'SCoreBO_slice': {
+        'parameter_priors':
+        {
+            'joint': slice_sqrt_prior, 
+        },
+        'postprocessing': postprocess_sqrt_slice
+    },
+    'BO_slice': {
+        'parameter_priors':
+        {
+            'joint': slice_bo_prior, 
+        },
+        'postprocessing': postprocess_bo_slice
+    },
+    'AL_slice': {
+        'parameter_priors':
+        {
+            'joint': slice_al_prior, 
+        },
+        'postprocessing': postprocess_al_slice
     },
 }
