@@ -189,6 +189,56 @@ def _get_square_root_gpytorch_model(
     return model
 
 
+def _get_active_learning_square_root_gpytorch_model(
+    Xs: List[Tensor],
+    Ys: List[Tensor],
+    Yvars: List[Tensor],
+    task_features: List[int],
+    fidelity_features: List[int],
+    state_dict: Optional[Dict[str, Tensor]] = None,
+    num_samples: int = 512,
+    thinning: int = 16,
+    use_input_warping: bool = False,
+    gp_kernel: str = "rbf",
+    **kwargs: Any,
+) -> ModelListGP:
+    r"""Instantiates a batched GPyTorchModel(ModelListGP) based on the given data.
+    The model fitting is based on MCMC and is run separately using pyro. The MCMC
+    samples will be loaded into the model instantiated here afterwards.
+
+    Returns:
+        A ModelListGP.
+    """
+    if len(task_features) > 0:
+        raise NotImplementedError("Currently do not support MT-GP models with MCMC!")
+    if len(fidelity_features) > 0:
+        raise NotImplementedError(
+            "Fidelity MF-GP models are not currently supported with MCMC!"
+        )
+    num_mcmc_samples = num_samples // thinning
+    covar_modules = [
+        _get_rbf_noscale_kernel(num_samples=num_mcmc_samples, dim=Xs[0].shape[-1])
+        if gp_kernel == "rbf"
+        else None
+        for _ in range(len(Xs))
+    ]
+
+    models = [
+        _get_square_root_model(
+            X=X.unsqueeze(0).expand(num_mcmc_samples, X.shape[0], -1),
+            Y=Y.unsqueeze(0).expand(num_mcmc_samples, Y.shape[0], -1),
+            Yvar=Yvar.unsqueeze(0).expand(num_mcmc_samples, Yvar.shape[0], -1),
+            fidelity_features=fidelity_features,
+            use_input_warping=use_input_warping,
+            covar_module=covar_module,
+            **kwargs,
+        )
+        for X, Y, Yvar, covar_module in zip(Xs, Ys, Yvars, covar_modules)
+    ]
+    model = ModelListGP(*models)
+    model.to(Xs[0])
+    return model
+
 def _get_square_root_model(
     X: Tensor,
     Y: Tensor,
@@ -507,18 +557,39 @@ def slice_sqrt_prior(dim):
     noise_variance = torch.Tensor([3])
     lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
 
-    means = torch.cat((outputscale_mean, noise_mean, lengthscale_mean), dim=0)
-    variances = torch.cat((outputscale_variance, noise_variance, lengthscale_variance), dim=0)
+    means = torch.cat((eta_mean, outputscale_mean, noise_mean, lengthscale_mean), dim=0)
+    variances = torch.cat((eta_variance, outputscale_variance, noise_variance, lengthscale_variance), dim=0)
     dist = MultivariateNormal(means, torch.diag(variances))
     return dist
 
+
+def slice_noscale_sqrt_prior(dim):
+    eta_mean = torch.Tensor([-1])
+    noise_mean = torch.Tensor([0])
+    lengthscale_mean = torch.zeros(dim)
+    eta_variance = torch.Tensor([0.25])
+    noise_variance = torch.Tensor([3])
+    lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
+
+    means = torch.cat((eta_mean, noise_mean, lengthscale_mean), dim=0)
+    variances = torch.cat((eta_variance, noise_variance, lengthscale_variance), dim=0)
+    dist = MultivariateNormal(means, torch.diag(variances))
+    return dist
+
+
+def postprocess_noscale_sqrt_slice(hp_tensor):
+    samples = {}
+    samples['delta_eta'] = hp_tensor[:, 0]
+    samples['noise'] = hp_tensor[:, 1]
+    samples['lengthscale'] = hp_tensor[:, 2:]
+    return samples
 
 def postprocess_sqrt_slice(hp_tensor):
     samples = {}
     samples['delta_eta'] = hp_tensor[:, 0]
     samples['outputscale'] = hp_tensor[:, 1]
     samples['noise'] = hp_tensor[:, 2]
-    samples['lengthscale'] = hp_tensor[3:, :]
+    samples['lengthscale'] = hp_tensor[:, 3:]
     return samples
 
 
@@ -526,7 +597,7 @@ def postprocess_bo_slice(hp_tensor):
     samples = {}
     samples['outputscale'] = hp_tensor[:, 0]
     samples['noise'] = hp_tensor[:, 1]
-    samples['lengthscale'] = hp_tensor[2:, :]
+    samples['lengthscale'] = hp_tensor[:, 2:]
     return samples
 
     
@@ -591,6 +662,13 @@ PRIOR_REGISTRY = {
             'joint': slice_sqrt_prior, 
         },
         'postprocessing': postprocess_sqrt_slice
+    },
+    'SCoreBO_AL_slice': {
+        'parameter_priors':
+        {
+            'joint': slice_noscale_sqrt_prior, 
+        },
+        'postprocessing': postprocess_noscale_sqrt_slice
     },
     'BO_slice': {
         'parameter_priors':
