@@ -836,12 +836,16 @@ class GenerationStrategy(Base):
         data: Optional[Data] = None,
         n: int = 1,
         pending_observations: Optional[Dict[str, List[ObservationFeatures]]] = None,
+        raw_samples_increase: int = 8,
         **kwargs: Any,
     ) -> GeneratorRun:
-    
+
         if self._curr.model.model_bridge_class is TorchModelBridge:
             pm_gen = deepcopy(self._curr)
             pm_gen.model_spec._fitted_model.model._botorch_acqf_class = PosteriorMean
+            pm_gen.model_spec.model_gen_kwargs\
+                ['model_gen_options']['optimizer_kwargs']['raw_samples'] *= raw_samples_increase
+
             generator_run = _gen_from_generation_step(
                 generation_step=pm_gen,
                 input_max_gen_draws=MAX_GEN_DRAWS,
@@ -853,10 +857,9 @@ class GenerationStrategy(Base):
             )
             return generator_run
 
-
         else:
-            #print('ELSE')
-            #warn('The current generation step does not allow for posterior mean.'
+            # print('ELSE')
+            # warn('The current generation step does not allow for posterior mean.'
             #     'returning as usual for the generation step.')
             return self._gen_multiple(
                 experiment=experiment,
