@@ -8,6 +8,7 @@ import json
 import logging
 import warnings
 from functools import partial
+from copy import deepcopy
 
 from logging import Logger
 from typing import (
@@ -49,6 +50,7 @@ from ax.core.types import (
     TParameterization,
     TParamValue,
 )
+
 from ax.early_stopping.strategies import BaseEarlyStoppingStrategy
 from ax.exceptions.constants import CHOLESKY_ERROR_ANNOTATION
 from ax.exceptions.core import (
@@ -542,7 +544,7 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
             # completed.
             (
                 stop_optimization,
-                global_stopping_message,
+                global_stopping_message,experiment
             ) = self.global_stopping_strategy.should_stop_optimization(
                 experiment=self.experiment
             )
@@ -576,6 +578,70 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
             new_generator_runs=[self.generation_strategy._generator_runs[-1]],
         )
         return not_none(trial.arm).parameters, trial.index
+
+    def get_best_guess(
+            self, ttl_seconds: Optional[int] = None, force: bool = False
+    ) -> Tuple[TParameterization, int]:
+        """
+        Generate trial with the next set of parameters to try in the iteration process.
+
+        Note: Service API currently supports only 1-arm trials.
+
+        Args:
+            ttl_seconds: If specified, will consider the trial failed after this
+                many seconds. Used to detect dead trials that were not marked
+                failed properly.
+            force: If set to True, this function will bypass the global stopping
+                strategy's decision and generate a new trial anyway.
+
+        Returns:
+            Tuple of trial parameterization, trial index
+        """
+
+        # Check if the global stopping strategy suggests to stop the optimization.
+        # This is needed only if there is actually a stopping strategy specified,
+        # and if this function is not forced to generate a new trial.
+        if self.global_stopping_strategy and (not force):
+            # The strategy itself will check if enough trials have already been
+            # completed.
+            (
+                stop_optimization,
+                global_stopping_message,experiment
+            ) = self.global_stopping_strategy.should_stop_optimization(
+                experiment=self.experiment
+            )
+            if stop_optimization:
+                raise OptimizationShouldStop(message=global_stopping_message)
+
+        try:
+            exp_copy = deepcopy(self.experiment)
+            trial = exp_copy.new_trial(
+                generator_run=self._gen_posterior_mean_generator(), ttl_seconds=ttl_seconds
+            )
+        except MaxParallelismReachedException as e:
+            if self._early_stopping_strategy is not None:
+                e.message += (  # noqa: B306
+                    " When stopping trials early, make sure to call `stop_trial_early` "
+                    "on the stopped trial."
+                )
+            raise e
+        logger.info(
+            f"Generated best guess {trial.index} with parameters "
+            f"{round_floats_for_logging(item=not_none(trial.arm).parameters)}."
+        )
+        trial.mark_running(no_runner_required=True)
+        self._save_or_update_trial_in_db_if_possible(
+            experiment=self.experiment,
+            trial=trial,
+        )
+        # TODO[T79183560]: Ensure correct handling of generator run when using
+        # foreign keys.
+        self._update_generation_strategy_in_db_if_possible(
+            generation_strategy=self.generation_strategy,
+            new_generator_runs=[self.generation_strategy._generator_runs[-1]],
+        )
+        return not_none(trial.arm).parameters, trial.index
+
 
     def get_current_trial_generation_limit(self) -> Tuple[int, bool]:
         """How many trials this ``AxClient`` instance can currently produce via
@@ -1701,6 +1767,29 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
         # stochasticity.
         with manual_seed(seed=self._random_seed):
             return not_none(self.generation_strategy).gen(
+                experiment=self.experiment,
+                n=n,
+                pending_observations=self._get_pending_observation_features(
+                    experiment=self.experiment
+                ),
+            )
+    
+    def _gen_posterior_mean_generator(self, n: int = 1) -> GeneratorRun:
+        """Generate new generator run for this experiment that tries to only
+        find the max of the posterior mean (for inference regret).
+
+        Args:
+            n: Number of arms to generate.
+        """
+        # If random seed is not set for this optimization, context manager does
+        # nothing; otherwise, it sets the random seed for torch, but only for the
+        # scope of this call. This is important because torch seed is set globally,
+        # so if we just set the seed without the context manager, it can have
+        # serious negative impact on the performance of the models that employ
+        # stochasticity.
+        from copy import deepcopy
+        with manual_seed(seed=self._random_seed):
+            return not_none(self.generation_strategy).gen_best_guess(
                 experiment=self.experiment,
                 n=n,
                 pending_observations=self._get_pending_observation_features(

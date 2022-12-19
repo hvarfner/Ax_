@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-
+from warnings import warn
 from logging import Logger
 from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
@@ -25,13 +25,16 @@ from ax.exceptions.generation_strategy import (
     GenerationStrategyRepeatedPoints,
     MaxParallelismReachedException,
 )
+from ax.models.torch.botorch import BotorchModel
+from ax.models.torch.botorch_modular.model import BoTorchModel as ModularBoTorchModel
+from ax.modelbridge import TorchModelBridge
 from ax.modelbridge.base import ModelBridge
 from ax.modelbridge.generation_node import GenerationStep
 from ax.modelbridge.registry import _extract_model_state_after_gen, ModelRegistryBase
 from ax.utils.common.base import Base
 from ax.utils.common.logger import _round_floats_for_logging, get_logger
 from ax.utils.common.typeutils import not_none
-
+from botorch.acquisition.analytic import PosteriorMean
 logger: Logger = get_logger(__name__)
 
 
@@ -826,6 +829,43 @@ class GenerationStrategy(Base):
                 "Updating completed trials with new data is not yet supported for "
                 "generation strategies that leverage `model.update` functionality."
             )
+
+    def gen_best_guess(
+        self,
+        experiment: Experiment,
+        data: Optional[Data] = None,
+        n: int = 1,
+        pending_observations: Optional[Dict[str, List[ObservationFeatures]]] = None,
+        **kwargs: Any,
+    ) -> GeneratorRun:
+    
+        if self._curr.model.model_bridge_class is TorchModelBridge:
+            pm_gen = deepcopy(self._curr)
+            pm_gen.model_spec._fitted_model.model._botorch_acqf_class = PosteriorMean
+            generator_run = _gen_from_generation_step(
+                generation_step=pm_gen,
+                input_max_gen_draws=MAX_GEN_DRAWS,
+                n=n,
+                pending_observations=pending_observations,
+                model_gen_kwargs=kwargs,
+                should_deduplicate=pm_gen.should_deduplicate,
+                arms_by_signature=self.experiment.arms_by_signature,
+            )
+            return generator_run
+
+
+        else:
+            #print('ELSE')
+            #warn('The current generation step does not allow for posterior mean.'
+            #     'returning as usual for the generation step.')
+            return self._gen_multiple(
+                experiment=experiment,
+                num_generator_runs=1,
+                data=data,
+                n=n,
+                pending_observations=pending_observations,
+                **kwargs,
+            )[0]
 
 
 def _gen_from_generation_step(
