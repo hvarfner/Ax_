@@ -34,7 +34,7 @@ from botorch.models.multitask import FixedNoiseMultiTaskGP, MultiTaskGP
 from botorch.models.pairwise_gp import PairwiseGP
 from botorch.models.transforms.input import ChainedInputTransform
 from botorch.utils.datasets import FixedNoiseDataset, SupervisedDataset
-from botorch.utils.transforms import is_fully_bayesian
+from botorch.utils.transforms import is_fully_bayesian, uses_slice_sampling
 from gpytorch.mlls.marginal_log_likelihood import MarginalLogLikelihood
 from torch import Tensor
 
@@ -269,7 +269,11 @@ def fit_botorch_model(
     for m in models:
         # TODO: Support deterministic models when we support `ModelList`
         if is_fully_bayesian(m):
-            fit_fully_bayesian_model_nuts(m, disable_progbar=True)
+            if uses_slice_sampling:
+                # TODO make this not a class method
+                m.load_mcmc_samples()
+            else:
+                fit_fully_bayesian_model_nuts(m, disable_progbar=True)
         elif isinstance(m, (GPyTorchModel, PairwiseGP)):
             mll_options = mll_options or {}
             mll = mll_class(likelihood=m.likelihood, model=m, **mll_options)

@@ -13,7 +13,6 @@ from botorch.models.gpytorch import GPyTorchModel
 from botorch.models.model_list_gp_regression import ModelListGP
 from gpytorch.kernels import RBFKernel, ScaleKernel
 from gpytorch.means import ZeroMean
-from botorch.models.gp_regression import SquareRootSingleTaskGP
 from torch import Tensor
 from torch.distributions import MultivariateNormal
 

@@ -76,7 +76,6 @@ from botorch.acquisition import AcquisitionFunction
 from botorch.models.fully_bayesian import (
     _psd_safe_pyro_mvn_sample,
     EllipticalSliceSampler,
-    sqrt_tensor_likelihood,
     normal_tensor_likelihood,
 
 )
