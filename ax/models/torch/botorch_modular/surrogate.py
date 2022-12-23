@@ -11,7 +11,7 @@ import inspect
 import warnings
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple, Type
-
+from copy import copy 
 import torch
 from ax.core.search_space import SearchSpaceDigest
 from ax.core.types import TCandidateMetadata
@@ -250,6 +250,11 @@ class Surrogate(Base):
             formatted_model_inputs['likelihood'] = input_constructor_kwargs['likelihood']
         formatted_model_inputs.update(self.model_options)
         # pyre-ignore [45]
+        model_input_keys = list(formatted_model_inputs.keys())
+        for key in model_input_keys:
+            if key not in botorch_model_class_args:
+                del formatted_model_inputs[key]
+
         self._model = self.botorch_model_class(**formatted_model_inputs)
 
     def _set_formatted_inputs(
