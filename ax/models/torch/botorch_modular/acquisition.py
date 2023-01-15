@@ -303,12 +303,10 @@ class Acquisition(Base):
                 post_processing_func=rounding_func,
                 **optimizer_options_with_defaults,
             )
-            Xs = [kg_X, ei_X]
-            vals = Tensor([kg_acq.item(), ei_acq.item()])
+            Xs = [kg_X, ei_X, pi_X]
+            vals = Tensor([kg_acq.item(), ei_acq.item(), pi_acq.item()])
             argmax = torch.argmax(vals)
-            print(['KG', 'EI', 'PI'])
-            print('CURRENT BEST', self.acqf.best_f)
-            print(['KG', 'EI', 'PI'][argmax], 'chosen.')
+
             print(vals)
             return Xs[argmax], vals[argmax]
 
