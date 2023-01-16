@@ -145,6 +145,7 @@ class Acquisition(Base):
                 if subset_idcs is not None
                 else self._objective_thresholds
             )
+            
         objective, posterior_transform = self.get_botorch_objective_and_transform(
             botorch_acqf_class=botorch_acqf_class,
             model=model,
@@ -193,7 +194,7 @@ class Acquisition(Base):
         self.acqf = botorch_acqf_class(**acqf_inputs)  # pyre-ignore [45]
         self.X_pending: Optional[Tensor] = X_pending
         self.X_observed: Tensor = not_none(X_observed)
-
+        
     @property
     def botorch_acqf_class(self) -> Type[AcquisitionFunction]:
         """BoTorch ``AcquisitionFunction`` class underlying this ``Acquisition``."""
@@ -259,6 +260,11 @@ class Acquisition(Base):
         ssd = search_space_digest
         bounds = _tensorize(ssd.bounds).t()
 
+        # If we use dummy as acqf, just return whatever
+        from botorch.acquisition.active_learning import Dummy
+        if isinstance(self.acqf, Dummy):
+            return torch.zeros_like(bounds[0]).unsqueeze(0), torch.Tensor([1])
+      
         # Prepare arguments for optimizer
         optimizer_options_with_defaults = optimizer_argparse(
             self.acqf,
@@ -307,9 +313,8 @@ class Acquisition(Base):
             vals = Tensor([kg_acq.item(), ei_acq.item(), pi_acq.item()])
             argmax = torch.argmax(vals)
 
-            print(vals)
             return Xs[argmax], vals[argmax]
-
+        
         if not discrete_features:
             return optimize_acqf(
                 acq_function=self.acqf,
