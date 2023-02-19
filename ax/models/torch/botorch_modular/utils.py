@@ -269,11 +269,7 @@ def fit_botorch_model(
     for m in models:
         # TODO: Support deterministic models when we support `ModelList`
         if is_fully_bayesian(m):
-            if uses_own_fit(m):
-                # TODO make this not a class method
-                m.fit()
-            else:
-                fit_fully_bayesian_model_nuts(m, disable_progbar=False)
+            m.fit()
         elif isinstance(m, (GPyTorchModel, PairwiseGP)):
             mll_options = mll_options or {}
             mll = mll_class(likelihood=m.likelihood, model=m, **mll_options)

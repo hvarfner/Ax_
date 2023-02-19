@@ -67,7 +67,6 @@ from ax.models.torch.botorch_moo import MultiObjectiveBotorchModel
 from ax.models.torch.cbo_sac import SACBO
 from ax.models.torch.fully_bayesian import (
     FullyBayesianBotorchModel,
-    FullyBayesianSliceSamplingBotorchModel,
     FullyBayesianMOOBotorchModel,
 )
 from ax.utils.common.kwargs import (
@@ -264,12 +263,6 @@ MODEL_KEY_TO_MODEL_SETUP: Dict[str, ModelSetup] = {
     "FullyBayesian": ModelSetup(
         bridge_class=TorchModelBridge,
         model_class=FullyBayesianBotorchModel,
-        transforms=Cont_X_trans + Y_trans,
-        standard_bridge_kwargs=STANDARD_TORCH_BRIDGE_KWARGS,
-    ),
-    "FullyBayesianSlice": ModelSetup(
-        bridge_class=TorchModelBridge,
-        model_class=FullyBayesianSliceSamplingBotorchModel,
         transforms=Cont_X_trans + Y_trans,
         standard_bridge_kwargs=STANDARD_TORCH_BRIDGE_KWARGS,
     ),
