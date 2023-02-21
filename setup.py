@@ -9,7 +9,7 @@ import os
 from setuptools import find_packages, setup
 
 # TODO: read pinned Botorch version from a shared source
-PINNED_BOTORCH_VERSION = "0.7.3"
+PINNED_BOTORCH_VERSION = "0.8.0"
 
 if os.environ.get("ALLOW_BOTORCH_LATEST"):
     # allows a more recent previously installed version of botorch to remain
@@ -39,17 +39,18 @@ DEV_REQUIRES = [
     "flake8",
     "hypothesis",
     "Jinja2",
+    "pyfakefs==5.1.0",
     "pytest>=4.6",
     "pytest-cov",
-    "sphinx",
-    "sphinx-autodoc-typehints",
+    "sphinx==5.3.0",
+    "sphinx-autodoc-typehints==1.19.5",
     "torchvision>=0.5.0",
     "nbconvert",
     "jupyter-client==6.1.12",
     "yappi",
 ]
 
-MYSQL_REQUIRES = ["SQLAlchemy>=1.1.13"]
+MYSQL_REQUIRES = ["SQLAlchemy==1.4.17"]
 
 NOTEBOOK_REQUIRES = ["jupyter"]
 

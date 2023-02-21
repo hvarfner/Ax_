@@ -470,6 +470,30 @@ class Scheduler(WithDBSettingsBase, BestPointMixin):
             use_model_predictions=use_model_predictions,
         )
 
+    @copy_doc(BestPointMixin.get_trace)
+    def get_trace(
+        self,
+        optimization_config: Optional[MultiObjectiveOptimizationConfig] = None,
+    ) -> List[float]:
+        return BestPointMixin._get_trace(
+            experiment=self.experiment,
+            optimization_config=optimization_config,
+        )
+
+    @copy_doc(BestPointMixin.get_trace_by_progression)
+    def get_trace_by_progression(
+        self,
+        optimization_config: Optional[OptimizationConfig] = None,
+        bins: Optional[List[float]] = None,
+        final_progression_only: bool = False,
+    ) -> Tuple[List[float], List[float]]:
+        return BestPointMixin._get_trace_by_progression(
+            experiment=self.experiment,
+            optimization_config=optimization_config,
+            bins=bins,
+            final_progression_only=final_progression_only,
+        )
+
     def report_results(self, force_refit: bool = False) -> Dict[str, Any]:
         """Optional user-defined function for reporting intermediate
         and final optimization results (e.g. make some API call, write to some
@@ -1647,6 +1671,12 @@ class Scheduler(WithDBSettingsBase, BestPointMixin):
 
                 metric_fetch_e = result.unwrap_err()
 
+                self._report_metric_fetch_e(
+                    trial=self.experiment.trials[trial_index],
+                    metric_name=metric_name,
+                    metric_fetch_e=metric_fetch_e,
+                )
+
                 # Log the Err so the user is aware that something has failed, even if
                 # we do not do anything
                 self.logger.warning(
@@ -1696,6 +1726,14 @@ class Scheduler(WithDBSettingsBase, BestPointMixin):
                 continue
 
         return results
+
+    def _report_metric_fetch_e(
+        self,
+        trial: BaseTrial,
+        metric_name: str,
+        metric_fetch_e: MetricFetchE,
+    ) -> None:
+        pass
 
     def _mark_err_trial_status(
         self,

@@ -90,12 +90,7 @@ from ax.storage.json_store.registry import (
 from ax.utils.common.docutils import copy_doc
 from ax.utils.common.executils import retry_on_exception
 from ax.utils.common.logger import _round_floats_for_logging, get_logger
-from ax.utils.common.typeutils import (
-    checked_cast,
-    checked_cast_complex,
-    checked_cast_optional,
-    not_none,
-)
+from ax.utils.common.typeutils import checked_cast, checked_cast_complex, not_none
 from botorch.utils.sampling import manual_seed
 
 logger: Logger = get_logger(__name__)
@@ -387,11 +382,11 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
         self._save_generation_strategy_to_db_if_possible()
 
     @property
-    def status_quo(self) -> TParameterization:
+    def status_quo(self) -> Optional[TParameterization]:
         """The parameterization of the status quo arm of the experiment."""
-        return not_none(
-            self.experiment.status_quo, "Experiment does not have a status quo arm"
-        ).parameters
+        if self.experiment.status_quo:
+            return self.experiment.status_quo.parameters
+        return None
 
     def set_status_quo(self, params: Optional[TParameterization]) -> None:
         """Set, or unset status quo on the experiment.  There may be risk
@@ -1616,6 +1611,30 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
             use_model_predictions=use_model_predictions,
         )
 
+    @copy_doc(BestPointMixin.get_trace)
+    def get_trace(
+        self,
+        optimization_config: Optional[MultiObjectiveOptimizationConfig] = None,
+    ) -> List[float]:
+        return BestPointMixin._get_trace(
+            experiment=self.experiment,
+            optimization_config=optimization_config,
+        )
+
+    @copy_doc(BestPointMixin.get_trace_by_progression)
+    def get_trace_by_progression(
+        self,
+        optimization_config: Optional[OptimizationConfig] = None,
+        bins: Optional[List[float]] = None,
+        final_progression_only: bool = False,
+    ) -> Tuple[List[float], List[float]]:
+        return BestPointMixin._get_trace_by_progression(
+            experiment=self.experiment,
+            optimization_config=optimization_config,
+            bins=bins,
+            final_progression_only=final_progression_only,
+        )
+
     def _update_trial_with_raw_data(
         self,
         trial_index: int,
@@ -1881,22 +1900,15 @@ class AxClient(WithDBSettingsBase, BestPointMixin, InstantiationBase):
                 a batched trial or a 1-arm trial.
         """
         raw_data_by_arm = self._raw_data_by_arm(trial=trial, raw_data=raw_data)
+        metadata = metadata if metadata is not None else {}
 
         evaluations, data = self.data_and_evaluations_from_raw_data(
             raw_data=raw_data_by_arm,
             metric_names=list(self.metric_names),
             trial_index=trial.index,
             sample_sizes=sample_sizes or {},
-            start_time=(
-                checked_cast_optional(int, metadata.get("start_time"))
-                if metadata is not None
-                else None
-            ),
-            end_time=(
-                checked_cast_optional(int, metadata.get("end_time"))
-                if metadata is not None
-                else None
-            ),
+            start_time=metadata.get("start_time"),
+            end_time=metadata.get("end_time"),
         )
         return evaluations, data
 

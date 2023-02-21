@@ -10,11 +10,6 @@ on:
     branches: [ main ]
     paths:
       - "tutorials/**"
-  pull_request:
-    branches: [ main ]
-    paths:
-      - "tutorials/**"
-
 
 jobs:
 
@@ -45,6 +40,7 @@ jobs:
     - name: Install dependencies (full requirements, Botorch main)
       env:
         ALLOW_BOTORCH_LATEST: true
+        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         pip install git+https://github.com/cornellius-gp/gpytorch.git
         pip install git+https://github.com/pytorch/botorch.git
@@ -53,6 +49,7 @@ jobs:
     - name: Install dependencies (minimal requirements, Botorch main)
       env:
         ALLOW_BOTORCH_LATEST: true
+        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         pip install git+https://github.com/cornellius-gp/gpytorch.git
         pip install git+https://github.com/pytorch/botorch.git
@@ -68,22 +65,8 @@ jobs:
         pytest -ra
 
   build-tutorials-with-pinned-botorch:
-
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: "3.8"
-    - name: Install dependencies
-      run: |
-        # will install the version of Botorch that is pinned in setup.py
-        pip install -e ".[tutorial]"
-    - name: Build tutorials
-      run: |
-        python scripts/make_tutorials.py -w $(pwd) -e
+    name: Build tutorials with pinned BoTorch
+    uses: ./.github/workflows/reusable_tutorials.yml
 
   publish-latest-website:
 
@@ -98,6 +81,7 @@ jobs:
     - name: Install dependencies
       env:
         ALLOW_BOTORCH_LATEST: true
+        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         # use latest BoTorch
         pip install git+https://github.com/cornellius-gp/gpytorch.git
@@ -124,6 +108,7 @@ jobs:
     - name: Install dependencies
       env:
         ALLOW_BOTORCH_LATEST: true
+        ALLOW_LATEST_GPYTORCH_LINOP: true
       run: |
         # use latest BoTorch
         pip install git+https://github.com/cornellius-gp/gpytorch.git

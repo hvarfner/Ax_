@@ -10,10 +10,9 @@ from collections import defaultdict
 from copy import deepcopy
 from warnings import warn
 from logging import Logger
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
-from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial, TrialStatus
 from ax.core.data import Data
 from ax.core.experiment import Experiment
@@ -22,7 +21,6 @@ from ax.core.observation import ObservationFeatures
 from ax.exceptions.core import DataRequiredError, NoDataError, UserInputError
 from ax.exceptions.generation_strategy import (
     GenerationStrategyCompleted,
-    GenerationStrategyRepeatedPoints,
     MaxParallelismReachedException,
 )
 from ax.models.torch.botorch import BotorchModel
@@ -30,10 +28,11 @@ from ax.models.torch.botorch_modular.model import BoTorchModel as ModularBoTorch
 from ax.modelbridge import TorchModelBridge
 from ax.modelbridge.base import ModelBridge
 from ax.modelbridge.generation_node import GenerationStep
+from ax.modelbridge.modelbridge_utils import extend_pending_observations
 from ax.modelbridge.registry import _extract_model_state_after_gen, ModelRegistryBase
 from ax.utils.common.base import Base
 from ax.utils.common.logger import _round_floats_for_logging, get_logger
-from ax.utils.common.typeutils import not_none
+from ax.utils.common.typeutils import not_none, checked_cast
 from botorch.acquisition.analytic import PosteriorMean
 logger: Logger = get_logger(__name__)
 
@@ -423,7 +422,7 @@ class GenerationStrategy(Base):
         data: Optional[Data] = None,
         n: int = 1,
         pending_observations: Optional[Dict[str, List[ObservationFeatures]]] = None,
-        **kwargs: Any,
+        **model_gen_kwargs: Any,
     ) -> List[GeneratorRun]:
         """Produce multiple generator runs at once, to be made into multiple
         trials on the experiment.
@@ -455,6 +454,9 @@ class GenerationStrategy(Base):
             pending_observations: A map from metric name to pending
                 observations for that metric, used by some models to avoid
                 resuggesting points that are currently being evaluated.
+            model_gen_kwargs: Keyword arguments that are passed through to
+                ``GenerationStep.gen``, which will pass them through to
+                ``ModelSpec.gen``, which will pass them to ``ModelBridge.gen``.
         """
         self.experiment = experiment
         self._maybe_move_to_next_step()
@@ -474,20 +476,16 @@ class GenerationStrategy(Base):
             )
 
         generator_runs = []
+        pending_observations = deepcopy(pending_observations) or {}
         for _ in range(num_generator_runs):
             try:
-                generator_run = _gen_from_generation_step(
-                    generation_step=self._curr,
-                    input_max_gen_draws=MAX_GEN_DRAWS,
+                generator_run = self._curr.gen(
                     n=n,
                     pending_observations=pending_observations,
-                    model_gen_kwargs=kwargs,
-                    should_deduplicate=self._curr.should_deduplicate,
-                    arms_by_signature=self.experiment.arms_by_signature,
+                    arms_by_signature_for_deduplication=experiment.arms_by_signature,
+                    **model_gen_kwargs,
                 )
-                generator_run._generation_step_index = self._curr.index
-                self._generator_runs.append(generator_run)
-                generator_runs.append(generator_run)
+
             except DataRequiredError as err:
                 # Model needs more data, so we log the error and return
                 # as many generator runs as we were able to produce, unless
@@ -496,6 +494,17 @@ class GenerationStrategy(Base):
                     raise  # pragma: no cover
                 logger.debug(f"Model required more data: {err}.")  # pragma: no cover
                 break  # pragma: no cover
+
+            self._generator_runs.append(generator_run)
+            generator_runs.append(generator_run)
+
+            # Extend the `pending_observation` with newly generated point(s)
+            # to avoid repeating them.
+            extend_pending_observations(
+                experiment=experiment,
+                pending_observations=pending_observations,
+                generator_run=generator_run,
+            )
 
         return generator_runs
 
@@ -658,18 +667,35 @@ class GenerationStrategy(Base):
         # Potential solution: store generator runs on `GenerationStep`-s and
         # split them per-model there.
         model_state_on_lgr = {}
+        model_on_curr = self._curr.model
         if (
             lgr is not None
             and lgr._generation_step_index == self._curr.index
             and lgr._model_state_after_gen
-            and self.model
         ):
-            # TODO[drfreund]: Consider moving this to `GenerationStep` or
-            # `GenerationNode`.
-            model_state_on_lgr = _extract_model_state_after_gen(
-                generator_run=lgr,
-                model_class=not_none(self.model).model.__class__,
-            )
+            if self.model or isinstance(model_on_curr, ModelRegistryBase):
+                # TODO[drfreund]: Consider moving this to `GenerationStep` or
+                # `GenerationNode`.
+                model_cls = (
+                    self.model.model.__class__
+                    if self.model is not None
+                    # NOTE: This checked cast is save per the OR-statement in last line
+                    # of the IF-check above.
+                    else checked_cast(ModelRegistryBase, model_on_curr).model_class
+                )
+                model_state_on_lgr = _extract_model_state_after_gen(
+                    generator_run=lgr,
+                    model_class=model_cls,
+                )
+            else:
+                logger.warning(  # pragma: no cover
+                    "While model state after last call to `gen` was recorded on the "
+                    "las generator run produced by this generation strategy, it could"
+                    " not be applied because model for this generation step is defined"
+                    f" via factory function: {self._curr.model}. Generation strategies"
+                    " with factory functions do not support reloading from a stored "
+                    "state."
+                )
 
         if not data.df.empty:
             trial_indices_in_data = sorted(data.df["trial_index"].unique())
@@ -709,7 +735,7 @@ class GenerationStrategy(Base):
             else:
                 data = self.experiment.lookup_data()
         else:
-            data = passed_in_data
+            data = passed_in_data  # pragma: no cover
         # By the time we get here, we will have already transitioned
         # to a new step, but if previous step required observed data,
         # we should raise an error even if enough trials were completed.
@@ -774,19 +800,6 @@ class GenerationStrategy(Base):
             df=passed_in_data.df[
                 passed_in_data.df.trial_index.isin(newly_completed_trials)
             ]
-        )
-
-    def _restore_model_from_generator_run(
-        self, models_enum: Optional[Type[ModelRegistryBase]] = None
-    ) -> None:
-        """Reinstantiates the most recent model on this generation strategy
-        from the last generator run it produced.
-
-        NOTE: Uses model and model bridge kwargs stored on the generator run, as well
-        as the model state attributes stored on the generator run.
-        """
-        self._fit_or_update_current_model(
-            data=self._get_data_for_fit(passed_in_data=None)
         )
 
     # ------------------------- State-tracking helpers. -------------------------

@@ -13,9 +13,9 @@ from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from unittest.mock import patch
 
 import numpy as np
+import pandas as pd
 import torch
 from ax.core.arm import Arm
-from ax.core.base_trial import TrialStatus
 from ax.core.generator_run import GeneratorRun
 from ax.core.metric import Metric
 from ax.core.optimization_config import MultiObjectiveOptimizationConfig
@@ -39,6 +39,7 @@ from ax.exceptions.generation_strategy import MaxParallelismReachedException
 from ax.metrics.branin import branin
 from ax.modelbridge.dispatch_utils import DEFAULT_BAYESIAN_PARALLELISM
 from ax.modelbridge.generation_strategy import GenerationStep, GenerationStrategy
+from ax.modelbridge.random import RandomModelBridge
 from ax.modelbridge.registry import Models
 from ax.service.ax_client import AxClient, ObjectiveProperties
 from ax.service.utils.best_point import (
@@ -53,7 +54,6 @@ from ax.storage.sqa_store.encoder import Encoder
 from ax.storage.sqa_store.sqa_config import SQAConfig
 from ax.storage.sqa_store.structs import DBSettings
 from ax.utils.common.testutils import TestCase
-from ax.utils.common.timeutils import current_timestamp_in_millis
 from ax.utils.common.typeutils import checked_cast, not_none
 from ax.utils.testing.core_stubs import DummyEarlyStoppingStrategy
 from ax.utils.testing.mock import fast_botorch_optimize
@@ -294,6 +294,7 @@ class TestAxClient(TestCase):
                 {"name": "y", "type": "range", "bounds": [0.0, 15.0]},
             ],
         )
+        self.assertIsNone(ax_client.status_quo)
         status_quo_params = {"x": 1.0, "y": 1.0}
         # pyre-fixme[6]: For 1st param expected `Optional[Dict[str, Union[None,
         #  bool, float, int, str]]]` but got `Dict[str, float]`.
@@ -320,10 +321,10 @@ class TestAxClient(TestCase):
         )
         self.assertEqual(ax_client.status_quo, status_quo_params)
         with self.subTest("it returns a copy"):
-            ax_client.status_quo.update({"x": 2.0})
-            ax_client.status_quo["y"] = 2.0
-            self.assertEqual(ax_client.status_quo["x"], 1.0)
-            self.assertEqual(ax_client.status_quo["y"], 1.0)
+            not_none(ax_client.status_quo).update({"x": 2.0})
+            not_none(ax_client.status_quo)["y"] = 2.0
+            self.assertEqual(not_none(ax_client.status_quo)["x"], 1.0)
+            self.assertEqual(not_none(ax_client.status_quo)["y"], 1.0)
 
     def test_set_optimization_config_to_moo_with_constraints(self) -> None:
         ax_client = AxClient()
@@ -1555,6 +1556,50 @@ class TestAxClient(TestCase):
         self.assertEqual(best_trial_values[0], {"branin": -2.0})
         self.assertTrue(math.isnan(best_trial_values[1]["branin"]["branin"]))
 
+    def test_trial_completion_with_metadata_with_iso_times(self) -> None:
+        ax_client = get_branin_optimization()
+        params, idx = ax_client.get_next_trial()
+        ax_client.complete_trial(
+            trial_index=idx,
+            raw_data={"branin": (0, 0.0)},
+            metadata={
+                "start_time": "2020-01-01",
+                "end_time": "2020-01-05 00:00:00",
+            },
+        )
+        with patch.object(
+            RandomModelBridge, "_fit", autospec=True, side_effect=RandomModelBridge._fit
+        ) as mock_fit:
+            ax_client.get_next_trial()
+            mock_fit.assert_called_once()
+            features = mock_fit.call_args_list[0][1]["observations"][0].features
+            # we're asserting it's actually created real Timestamp objects
+            # for the observation features
+            self.assertEqual(features.start_time.day, 1)
+            self.assertEqual(features.end_time.day, 5)
+
+    def test_trial_completion_with_metadata_milisecond_times(self) -> None:
+        ax_client = get_branin_optimization()
+        params, idx = ax_client.get_next_trial()
+        ax_client.complete_trial(
+            trial_index=idx,
+            raw_data={"branin": (0, 0.0)},
+            metadata={
+                "start_time": int(pd.Timestamp("2020-01-01").timestamp() * 1000),
+                "end_time": int(pd.Timestamp("2020-01-05").timestamp() * 1000),
+            },
+        )
+        with patch.object(
+            RandomModelBridge, "_fit", autospec=True, side_effect=RandomModelBridge._fit
+        ) as mock_fit:
+            ax_client.get_next_trial()
+            mock_fit.assert_called_once()
+            features = mock_fit.call_args_list[0][1]["observations"][0].features
+            # we're asserting it's actually created real Timestamp objects
+            # for the observation features
+            self.assertEqual(features.start_time.day, 1)
+            self.assertEqual(features.end_time.day, 5)
+
     def test_abandon_trial(self) -> None:
         ax_client = get_branin_optimization()
 
@@ -1598,7 +1643,7 @@ class TestAxClient(TestCase):
         self.assertEqual(ax_client.get_best_parameters()[0], params2)
 
     def test_start_and_end_time_in_trial_completion(self) -> None:
-        start_time = current_timestamp_in_millis()
+        start_time = pd.Timestamp.now().isoformat()
         ax_client = AxClient()
         ax_client.create_experiment(
             parameters=[
@@ -1613,7 +1658,7 @@ class TestAxClient(TestCase):
             raw_data=1.0,
             metadata={
                 "start_time": start_time,
-                "end_time": current_timestamp_in_millis(),
+                "end_time": pd.Timestamp.now().isoformat(),
             },
         )
         dat = ax_client.experiment.fetch_data().df
@@ -1872,13 +1917,11 @@ class TestAxClient(TestCase):
         gs = ax_client.generation_strategy
         ax_client = AxClient(db_settings=db_settings)
         ax_client.load_experiment_from_database("test_experiment")
-        # Trial #4 was completed after the last time the generation strategy
-        # generated candidates, so pre-save generation strategy was not
-        # "aware" of completion of trial #4. Post-restoration generation
-        # strategy is aware of it, however, since it gets restored with most
-        # up-to-date experiment data. Do adding trial #4 to the seen completed
-        # trials of pre-storage GS to check their equality otherwise.
-        gs._seen_trial_indices_by_status[TrialStatus.COMPLETED].add(4)
+        # These fields of the reloaded GS are not expected to be set (both will be
+        # set during next model fitting call), so we unset them on the original GS as
+        # well.
+        gs._seen_trial_indices_by_status = None
+        gs._model = None
         self.assertEqual(gs, ax_client.generation_strategy)
         with self.assertRaises(ValueError):
             # Overwriting existing experiment.
@@ -2007,8 +2050,7 @@ class TestAxClient(TestCase):
             ax_client = AxClient.from_json_snapshot(serialized)
             with self.subTest(ax=ax_client, params=params, idx=idx):
                 new_params, new_idx = ax_client.get_next_trial()
-                self.assertEqual(params, new_params)
-                self.assertEqual(idx, new_idx)
+                # Sobol "init_position" setting should be saved on the generator run.
                 self.assertEqual(
                     # pyre-fixme[16]: `BaseTrial` has no attribute `_generator_run`.
                     ax_client.experiment.trials[
@@ -2016,6 +2058,8 @@ class TestAxClient(TestCase):
                     ]._generator_run._model_state_after_gen["init_position"],
                     idx + 1,
                 )
+                self.assertEqual(params, new_params)
+                self.assertEqual(idx, new_idx)
             # pyre-fixme[6]: For 2nd param expected `Union[List[Tuple[Dict[str, Union...
             ax_client.complete_trial(idx, branin(params.get("x"), params.get("y")))
 

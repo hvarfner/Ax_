@@ -21,7 +21,7 @@ References
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from ax.exceptions.core import AxError
@@ -34,7 +34,7 @@ from ax.models.torch.utils import (  # noqa F40
 )
 from ax.models.torch_base import TorchModel
 from ax.utils.common.constants import Keys
-from ax.utils.common.typeutils import checked_cast, not_none
+from ax.utils.common.typeutils import not_none
 from botorch.acquisition.acquisition import AcquisitionFunction
 from botorch.acquisition.multi_objective.objective import WeightedMCMultiOutputObjective
 from botorch.acquisition.multi_objective.utils import get_default_partitioning_alpha
@@ -42,6 +42,8 @@ from botorch.acquisition.utils import get_acquisition_function
 from botorch.models.model import Model
 from botorch.optim.optimize import optimize_acqf_list
 from botorch.posteriors.gpytorch import GPyTorchPosterior
+from botorch.posteriors.posterior import Posterior
+from botorch.posteriors.posterior_list import PosteriorList
 from botorch.utils.multi_objective.hypervolume import infer_reference_point
 from botorch.utils.multi_objective.pareto import is_non_dominated
 from torch import Tensor
@@ -216,7 +218,7 @@ def get_EHVI(
         objective_weights=objective_weights, objective_thresholds=objective_thresholds
     )
     with torch.no_grad():
-        Y = checked_cast(GPyTorchPosterior, model.posterior(X_observed)).mean
+        Y = _check_posterior_type(model.posterior(X_observed)).mean
     # For EHVI acquisition functions we pass the constraint transform directly.
     if outcome_constraints is None:
         cons_tfs = None
@@ -416,6 +418,7 @@ def infer_objective_thresholds(
     subset_idcs: Optional[Tensor] = None,
     Xs: Optional[List[Tensor]] = None,
     X_observed: Optional[Tensor] = None,
+    objective_thresholds: Optional[Tensor] = None,
 ) -> Tensor:
     """Infer objective thresholds.
 
@@ -450,6 +453,11 @@ def infer_objective_thresholds(
             vary from i=1,...,m.
         X_observed: A `n x d`-dim tensor of in-sample points to use for
             determining the current in-sample Pareto frontier.
+        objective_thresholds: Any known objective thresholds to pass to
+            `infer_reference_point` heuristic. This should not be subsetted.
+            If only a subset of the objectives have known thresholds, the
+            remaining objectives should be NaN. If no objective threshold
+            was provided, this can be `None`.
 
     Returns:
         A `m`-dim tensor of objective thresholds, where the objective
@@ -506,9 +514,10 @@ def infer_objective_thresholds(
                 outcome_constraints[1],
             )
     with torch.no_grad():
-        pred = checked_cast(
-            GPyTorchPosterior, not_none(model).posterior(not_none(X_observed))
+        pred = _check_posterior_type(
+            not_none(model).posterior(not_none(X_observed))
         ).mean
+
     if outcome_constraints is not None:
         cons_tfs = get_outcome_constraint_transforms(outcome_constraints)
         # pyre-ignore [16]
@@ -520,8 +529,14 @@ def infer_objective_thresholds(
     obj_weights_subset = objective_weights[obj_mask]
     obj = pred[..., obj_mask] * obj_weights_subset
     pareto_obj = obj[is_non_dominated(obj)]
+    # If objective thresholds are provided, set max_ref_point accordingly.
+    if objective_thresholds is not None:
+        max_ref_point = objective_thresholds[obj_mask] * obj_weights_subset
+    else:
+        max_ref_point = None
     objective_thresholds = infer_reference_point(
         pareto_Y=pareto_obj,
+        max_ref_point=max_ref_point,
         scale=0.1,
     )
     # multiply by objective weights to return objective thresholds in the
@@ -536,3 +551,15 @@ def infer_objective_thresholds(
     obj_idcs = subset_idcs[obj_mask]
     full_objective_thresholds[obj_idcs] = objective_thresholds.clone()
     return full_objective_thresholds
+
+
+def _check_posterior_type(
+    posterior: Posterior,
+) -> Union[GPyTorchPosterior, PosteriorList]:
+    """Check whether the posterior type is  `GPyTorchPosterior` or `PosteriorList`."""
+    if isinstance(posterior, GPyTorchPosterior) or isinstance(posterior, PosteriorList):
+        return posterior
+    else:
+        raise ValueError(
+            f"Value was not of type GPyTorchPosterior or PosteriorList:\n{posterior}"
+        )

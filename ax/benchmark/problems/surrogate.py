@@ -5,8 +5,6 @@
 
 from typing import Any, Dict, Iterable, List, Set
 
-import numpy as np
-
 import pandas as pd
 import torch
 from ax.benchmark.benchmark_problem import SingleObjectiveBenchmarkProblem
@@ -17,7 +15,6 @@ from ax.core.objective import Objective
 from ax.core.optimization_config import OptimizationConfig
 from ax.core.runner import Runner
 from ax.core.search_space import SearchSpace
-from ax.modelbridge.modelbridge_utils import extract_search_space_digest
 from ax.models.torch.botorch_modular.surrogate import Surrogate
 
 from ax.utils.common.base import Base
@@ -46,13 +43,14 @@ class SurrogateBenchmarkProblem(SingleObjectiveBenchmarkProblem):
         minimize: bool,
         optimal_value: float,
         num_trials: int,
+        infer_noise: bool = True,
     ) -> "SurrogateBenchmarkProblem":
         return SurrogateBenchmarkProblem(
             name=name,
             search_space=search_space,
             optimization_config=OptimizationConfig(
                 objective=Objective(
-                    metric=SurrogateMetric(),
+                    metric=SurrogateMetric(infer_noise=infer_noise),
                     minimize=minimize,
                 )
             ),
@@ -64,12 +62,14 @@ class SurrogateBenchmarkProblem(SingleObjectiveBenchmarkProblem):
             ),
             optimal_value=optimal_value,
             num_trials=num_trials,
+            infer_noise=infer_noise,
         )
 
 
 class SurrogateMetric(Metric):
-    def __init__(self) -> None:
+    def __init__(self, infer_noise: bool = True) -> None:
         super().__init__(name="prediction")
+        self.infer_noise = infer_noise
 
     # pyre-fixme[2]: Parameter must be annotated.
     def fetch_trial_data(self, trial: BaseTrial, **kwargs) -> MetricFetchResult:
@@ -83,7 +83,7 @@ class SurrogateMetric(Metric):
                     "arm_name": [name for name, _ in trial.arms_by_name.items()],
                     "metric_name": self.name,
                     "mean": prediction,
-                    "sem": np.nan,
+                    "sem": None if self.infer_noise else 0,
                     "trial_index": trial.index,
                 }
             )
@@ -113,14 +113,6 @@ class SurrogateRunner(Runner):
 
         self.results: Dict[int, float] = {}
         self.statuses: Dict[int, TrialStatus] = {}
-
-        surrogate.fit(
-            datasets=datasets,
-            metric_names=["objective"],
-            search_space_digest=extract_search_space_digest(
-                search_space=search_space, param_names=[*search_space.parameters.keys()]
-            ),
-        )
 
     def run(self, trial: BaseTrial) -> Dict[str, Any]:
         self.statuses[trial.index] = TrialStatus.COMPLETED
