@@ -75,6 +75,8 @@ from ax.utils.common.typeutils import checked_cast
 from botorch.acquisition import AcquisitionFunction
 from botorch.models.fully_bayesian import (
     _psd_safe_pyro_mvn_sample,
+    EllipticalSliceSampler,
+    
 )
 from botorch.models.gpytorch import GPyTorchModel
 from botorch.models.model import Model
@@ -655,6 +657,169 @@ def get_fully_bayesian_acqf_nehvi(
     )
 
 
+def get_and_fit_model_mcmc_slice(
+    Xs: List[Tensor],
+    Ys: List[Tensor],
+    Yvars: List[Tensor],
+    task_features: List[int],
+    fidelity_features: List[int],
+    metric_names: List[str],
+    log_likelihood_fun: Callable,
+    parameter_priors: Dict[str, Optional[Any]],
+    postprocessing: Dict[str, Optional[Any]],
+    get_gpytorch_model: Callable,
+    state_dict: Optional[Dict[str, Tensor]] = None,
+    refit_model: bool = True,
+    use_input_warping: bool = False,
+    num_samples: int = 256,
+    warmup_steps: int = 512,
+    thinning: int = 16,
+    max_tree_depth: int = 6,
+    disable_progbar: bool = False,
+    gp_kernel: str = "matern",
+    verbose: bool = False,
+    **kwargs: Any,
+) -> GPyTorchModel:
+    r"""Instantiates a batched GPyTorchModel(ModelListGP) based on the given data and
+    fit the model based on MCMC in pyro. The batch dimension corresponds to sampled
+    hyperparameters from MCMC.
+    """
+    model, mcmc_samples_list = _get_slice_mcmc_samples(
+        Xs=Xs,
+        Ys=Ys,
+        Yvars=Yvars,
+        task_features=task_features,
+        log_likelihood_fun=log_likelihood_fun,
+        fidelity_features=fidelity_features,
+        metric_names=metric_names,
+        state_dict=state_dict,
+        refit_model=refit_model,
+        use_input_warping=use_input_warping,
+        num_samples=num_samples,
+        warmup_steps=warmup_steps,
+        thinning=thinning,
+        disable_progbar=disable_progbar,
+        gp_kernel=gp_kernel,
+        verbose=verbose,
+        parameter_priors=parameter_priors,
+        postprocessing=postprocessing,
+        get_gpytorch_model=get_gpytorch_model,
+    )
+    for i, mcmc_samples in enumerate(mcmc_samples_list):
+        load_mcmc_samples_to_model(model=model.models[i], mcmc_samples=mcmc_samples)
+    return model
+
+
+def _get_slice_mcmc_samples(
+    Xs: List[Tensor],
+    Ys: List[Tensor],
+    Yvars: List[Tensor],
+    task_features: List[int],
+    log_likelihood_fun: Callable,
+    fidelity_features: List[int],
+    metric_names: List[str],
+    parameter_priors: Dict[str, Optional[Any]],
+    postprocessing: Callable,
+    get_gpytorch_model: Callable,
+    state_dict: Optional[Dict[str, Tensor]] = None,
+    refit_model: bool = True,
+    use_input_warping: bool = False,
+    num_samples: int = 256,
+    warmup_steps: int = 512,
+    thinning: int = 16,
+    disable_progbar: bool = False,
+    gp_kernel: str = "matern",
+    verbose: bool = False,
+    # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
+    # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
+    rank: Optional[int] = 1,
+    **kwargs: Any,
+    # pyre-fixme[24]: Generic type `dict` expects 2 type parameters, use `typing.Dict`
+    #  to avoid runtime subscripting errors.
+    ) -> Tuple[ModelListGP, List[Dict]]:
+
+    model = get_gpytorch_model(
+        Xs=Xs,
+        Ys=Ys,
+        Yvars=Yvars,
+        task_features=task_features,
+        fidelity_features=fidelity_features,
+        state_dict=state_dict,
+        num_samples=num_samples,
+        thinning=thinning,
+        use_input_warping=use_input_warping,
+        gp_kernel=gp_kernel,
+        **kwargs,
+    )
+    if state_dict is not None:
+        # Expected `OrderedDict[typing.Any, typing.Any]` for 1st
+        #  param but got `Dict[str, Tensor]`.
+        model.load_state_dict(state_dict)
+
+    mcmc_samples_list = []
+    if len(task_features) > 0:
+        task_feature = task_features[0]
+    else:
+        task_feature = None
+    if state_dict is None or refit_model:
+        for X, Y, Yvar in zip(Xs, Ys, Yvars):
+            mcmc_samples = slice_sample(
+                X=X,
+                Y=Y,
+                Yvar=Yvar,
+                log_likelihood_fun=log_likelihood_fun,
+                parameter_priors=parameter_priors,  
+                postprocessing=postprocessing,
+                num_samples=num_samples,
+                warmup_steps=warmup_steps,
+                thinning=thinning,
+                use_input_warping=use_input_warping,
+                disable_progbar=disable_progbar,
+                gp_kernel=gp_kernel,
+                verbose=verbose,
+            )
+            mcmc_samples_list.append(mcmc_samples)
+    return model, mcmc_samples_list
+
+
+def slice_sample(
+        X: List[Tensor],
+        Y: List[Tensor],
+        Yvar: List[Tensor],
+        log_likelihood_fun: Callable,
+        parameter_priors: Dict[str, Optional[Any]],
+        postprocessing: Callable,
+        num_samples: int = 512,
+        warmup_steps: int = 256,
+        thinning: int = 16,
+        use_input_warping: bool = False,
+        disable_progbar: bool = False,
+        gp_kernel: str = 'matern',
+        verbose: bool = False,
+    ):
+    Y = Y.view(-1)
+    Yvar = Yvar.view(-1)
+    tkwargs = {"dtype": X.dtype, "device": X.device}
+    dim = X.shape[-1]
+
+    prior_func = parameter_priors['joint']
+    prior = prior_func(dim=dim)
+    log_likelihood_fun = partial(log_likelihood_fun, gp_kernel=gp_kernel)
+    Y = Y.reshape(-1, 1)
+    #raise SystemExit
+    sampler = EllipticalSliceSampler(
+        prior, 
+        log_likelihood_fun, 
+        num_samples=num_samples, 
+        pdf_params=(X, Y), 
+        warmup=warmup_steps, 
+        thinning=thinning
+    )
+    samples = sampler.get_samples()
+    processed_samples = postprocessing(samples)
+    return processed_samples
+
+
 class FullyBayesianBotorchModelMixin:
     model: Optional[Model] = None
 
@@ -768,6 +933,92 @@ class FullyBayesianBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
             verbose=verbose,
         )
 
+
+class FullyBayesianSliceSamplingBotorchModel(FullyBayesianBotorchModelMixin, BotorchModel):
+    r"""Fully Bayesian Model that uses Slica Sampling to sample from hyperparameter posterior.
+    """
+
+    def __init__(
+        self,
+        model_constructor: TModelConstructor, # REMOVED FOR CLARITY = _get_single_task_gpytorch_model,
+        log_likelihood_fun: Callable, ## = single_task_pyro_model,
+        model_predictor: TModelPredictor = predict_from_model_mcmc,
+        acqf_constructor: TAcqfConstructor = get_NEI,
+        # pyre-fixme[9]: acqf_optimizer declared/used type mismatch
+        acqf_optimizer: TOptimizer = scipy_optimizer,
+        best_point_recommender: TBestPointRecommender = recommend_best_observed_point,
+        refit_on_cv: bool = False,
+        refit_on_update: bool = True,
+        warm_start_refitting: bool = True,
+        use_input_warping: bool = False,
+        # use_saas is deprecated. TODO: remove
+        prior_type: Optional[str] = 'AL_slice',
+        num_samples: int = 256,
+        warmup_steps: int = 512,
+        thinning: int = 16,
+        max_tree_depth: int = 6,
+        disable_progbar: bool = False,
+        gp_kernel: str = "matern",
+        verbose: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize Fully Bayesian Botorch Model.
+        Args:
+            model_constructor: A callable that instantiates and fits a model on data,
+                with signature as described below.
+            model_predictor: A callable that predicts using the fitted model, with
+                signature as described below.
+            acqf_constructor: A callable that creates an acquisition function from a
+                fitted model, with signature as described below.
+            acqf_optimizer: A callable that optimizes the acquisition function, with
+                signature as described below.
+            best_point_recommender: A callable that recommends the best point, with
+                signature as described below.
+            refit_on_cv: If True, refit the model for each fold when performing
+                cross-validation.
+            refit_on_update: If True, refit the model after updating the training
+                data using the `update` method.
+            warm_start_refitting: If True, start model refitting from previous
+                model parameters in order to speed up the fitting process.
+            use_input_warping: A boolean indicating whether to use input warping
+            use_saas: [deprecated] A boolean indicating whether to use the SAAS model
+            num_samples: The number of MCMC samples. Note that with thinning,
+                num_samples/thinning samples are retained.
+            warmup_steps: The number of burn-in steps for NUTS.
+            thinning: The amount of thinning. Every nth sample is retained.
+            max_tree_depth: The max_tree_depth for NUTS.
+            disable_progbar: A boolean indicating whether to print the progress
+                bar and diagnostics during MCMC.
+            gp_kernel: The type of ARD base kernel. "matern" corresponds to a Matern-5/2
+                kernel and "rbf" corresponds to an RBF kernel.
+            verbose: A boolean indicating whether to print summary stats from MCMC.
+        """
+        BotorchModel.__init__(
+            self,
+            model_constructor=set_slice_prior_and_models(
+                get_and_fit_model_mcmc_slice,
+                PRIOR_REGISTRY[prior_type],
+                gpytorch_model=model_constructor,
+                log_likelihood_fun=log_likelihood_fun,
+            ),  # TODO make this into one thing, not two partials
+            model_predictor=model_predictor,
+            acqf_constructor=partial(get_fully_bayesian_acqf,
+                                     acqf_constructor=acqf_constructor),
+            acqf_optimizer=acqf_optimizer,
+            best_point_recommender=best_point_recommender,
+            refit_on_cv=refit_on_cv,
+            refit_on_update=refit_on_update,
+            warm_start_refitting=warm_start_refitting,
+            use_input_warping=use_input_warping,
+            num_samples=num_samples,
+            warmup_steps=warmup_steps,
+            thinning=thinning,
+            max_tree_depth=max_tree_depth,
+            disable_progbar=disable_progbar,
+            gp_kernel=gp_kernel,
+            verbose=verbose,
+        )
+        
 
 class FullyBayesianMOOBotorchModel(
     FullyBayesianBotorchModelMixin, MultiObjectiveBotorchModel

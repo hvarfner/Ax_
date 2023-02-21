@@ -546,6 +546,46 @@ def slice_al_prior(dim):
     return dist
 
 
+def slice_warping_prior(dim):
+    mu_mean = torch.Tensor([0])
+    outputscale_mean = torch.Tensor([0])
+    noise_mean = torch.Tensor([0])
+    lengthscale_mean = torch.zeros(dim)
+    alpha_mean = torch.zeros(dim)
+    beta_mean = torch.zeros(dim)
+    mu_variance = torch.Tensor([1])
+    outputscale_variance = torch.Tensor([3])
+    noise_variance = torch.Tensor([3])
+    lengthscale_variance = torch.ones_like(lengthscale_mean) * 3
+    alpha_variance = torch.ones_like(lengthscale_mean) * 1
+    beta_variance = torch.ones_like(lengthscale_mean) * 1
+
+    means = torch.cat(
+        (
+            mu_mean,
+            outputscale_mean,
+            noise_mean,
+            lengthscale_mean,
+            alpha_mean,
+            beta_mean,
+        ), 
+        dim=0
+    )
+    variances = torch.cat(
+        (
+            mu_variance,
+            outputscale_variance,
+            noise_variance,
+            lengthscale_variance,
+            alpha_variance,
+            beta_variance,
+        ), 
+        dim=0
+    )
+    dist = MultivariateNormal(means, torch.diag(variances))
+    return dist
+
+
 def slice_sqrt_prior(dim):
     eta_mean = torch.Tensor([-1])
     outputscale_mean = torch.Tensor([0])
@@ -583,12 +623,15 @@ def postprocess_noscale_sqrt_slice(hp_tensor):
     samples['lengthscale'] = hp_tensor[:, 2:]
     return samples
 
-def postprocess_sqrt_slice(hp_tensor):
+def postprocess_warping(hp_tensor):
     samples = {}
-    samples['delta_eta'] = hp_tensor[:, 0]
+    dim  = int((hp_tensor.shape[1] - 3) / 3)
+    samples['mean'] = hp_tensor[:, 0]
     samples['outputscale'] = hp_tensor[:, 1]
     samples['noise'] = hp_tensor[:, 2]
-    samples['lengthscale'] = hp_tensor[:, 3:]
+    samples['lengthscale'] = hp_tensor[:, 3:dim + 3]
+    samples['alpha'] = hp_tensor[:, dim + 3:2 * dim + 3]
+    samples['beta'] = hp_tensor[:, 2 * dim + 3:3 * dim + 3]
     return samples
 
 
@@ -660,7 +703,15 @@ PRIOR_REGISTRY = {
         {
             'joint': slice_sqrt_prior, 
         },
-        'postprocessing': postprocess_sqrt_slice
+        'postprocessing': postprocess_bo_slice
+    },
+    'BO_slice_warp':
+    {
+        'parameter_priors':
+        {
+            'joint': slice_warping_prior, 
+        },
+        'postprocessing': postprocess_warping
     },
     'SCoreBO_AL_slice': {
         'parameter_priors':
