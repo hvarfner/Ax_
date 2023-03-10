@@ -508,6 +508,7 @@ class TorchModelBridge(ModelBridge):
         )
         # Fit
         self.model = model
+        
         self.model.fit(
             # datasets are guaranteed to have all outcomes here by construction
             datasets=[not_none(dataset) for dataset in datasets],

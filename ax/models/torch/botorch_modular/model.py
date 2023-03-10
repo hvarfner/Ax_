@@ -270,9 +270,10 @@ class BoTorchModel(TorchModel, Base):
 
         # Store search space info for later use (e.g. during generation)
         self._search_space_digest = search_space_digest
-
+        
         # Step 0. If the user passed in a preconstructed surrogate we won't have a
         # SurrogateSpec and must assume we're fitting all metrics
+        refit = refit or len(self.refit_params) == 0
         if Keys.ONLY_SURROGATE in self._surrogates.keys():
             self._surrogates[Keys.ONLY_SURROGATE].fit(
                 datasets=datasets,
@@ -283,6 +284,7 @@ class BoTorchModel(TorchModel, Base):
                 if state_dicts
                 else None,
                 refit=refit,
+                refit_params=self.refit_params
             )
             return
 
@@ -346,6 +348,7 @@ class BoTorchModel(TorchModel, Base):
                     force=True,
                 )
             refit = self.refit_on_update
+
             surrogate.fit(
                 datasets=subset_datasets,
                 metric_names=subset_metric_names,
@@ -571,7 +574,7 @@ class BoTorchModel(TorchModel, Base):
             search_space_digest,
             robust_digest=None,
         )
-
+        
         try:
             self.fit(
                 datasets=datasets,
