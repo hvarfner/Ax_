@@ -46,6 +46,7 @@ from ax.modelbridge.transforms.relativize import Relativize
 from ax.modelbridge.transforms.remove_fixed import RemoveFixed
 from ax.modelbridge.transforms.search_space_to_choice import SearchSpaceToChoice
 from ax.modelbridge.transforms.standardize_y import StandardizeY
+from ax.modelbridge.transforms.power_transform_y import PowerTransformY
 from ax.modelbridge.transforms.stratified_standardize_y import StratifiedStandardizeY
 from ax.modelbridge.transforms.task_encode import TaskEncode
 from ax.modelbridge.transforms.trial_as_task import TrialAsTask
@@ -171,7 +172,16 @@ MODEL_KEY_TO_MODEL_SETUP: Dict[str, ModelSetup] = {
         model_class=ModularBoTorchModel,
         transforms=Cont_X_trans + Y_trans,
         standard_bridge_kwargs=STANDARD_TORCH_BRIDGE_KWARGS,
-    ),    
+    ),
+    "BoTorchTransY": ModelSetup(
+        bridge_class=TorchModelBridge,
+        model_class=ModularBoTorchModel,
+        transforms=Cont_X_trans + [PowerTransformY] + Y_trans,
+        standard_bridge_kwargs={
+            "torch_dtype": torch.double,
+            "config": {}
+        },
+    ),
     "BoTorchNoTrans": ModelSetup(
         bridge_class=TorchModelBridge,
         model_class=ModularBoTorchModel,
@@ -364,7 +374,9 @@ class ModelRegistryBase(Enum):
                 function=bridge_class, omit=["experiment", "search_space", "data"]
             ),
         )
-
+        
+        bridge_kwargs['transform_configs'] = {
+            'PowerTransformY': {'metrics': data.metric_names}}
         # Create model bridge with the consolidated kwargs.
         model_bridge = bridge_class(
             search_space=search_space or not_none(experiment).search_space,
@@ -471,6 +483,7 @@ class Models(ModelRegistryBase):
     THOMPSON = "Thompson"
     BOTORCH = "BO"
     BOTORCH_MODULAR = "BoTorch"
+    BOTORCH_MODULAR_TRANS_Y = "BoTorchTransY"
     BOTORCH_MODULAR_NOTRANS = 'BoTorchNoTrans'
     EMPIRICAL_BAYES_THOMPSON = "EB"
     UNIFORM = "Uniform"
