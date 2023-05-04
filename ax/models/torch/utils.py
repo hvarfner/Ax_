@@ -43,6 +43,7 @@ from botorch.acquisition.utils import get_infeasible_cost
 from botorch.models import ModelListGP, SingleTaskGP
 from botorch.models.model import Model
 from botorch.posteriors.fully_bayesian import FullyBayesianPosterior
+from botorch.posteriors.path import PathPosterior
 from botorch.posteriors.gpytorch import GPyTorchPosterior
 from botorch.posteriors.posterior_list import PosteriorList
 from botorch.sampling.normal import IIDNormalSampler, SobolQMCNormalSampler
@@ -607,7 +608,7 @@ def predict_from_model(model: Model, X: Tensor) -> Tuple[Tensor, Tensor]:
         if isinstance(posterior, FullyBayesianPosterior):
             mean = posterior.mixture_mean.cpu().detach()
             var = posterior.mixture_variance.cpu().detach().clamp_min(0)
-        elif isinstance(posterior, (GPyTorchPosterior, PosteriorList)):
+        elif isinstance(posterior, (GPyTorchPosterior, PosteriorList, PathPosterior)):
             mean = posterior.mean.cpu().detach()
             var = posterior.variance.cpu().detach().clamp_min(0)
         else:  # pragma: no cover
