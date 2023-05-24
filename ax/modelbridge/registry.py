@@ -58,7 +58,6 @@ from ax.models.discrete.thompson import ThompsonSampler
 from ax.models.random.alebo_initializer import ALEBOInitializer
 from ax.models.random.sobol import SobolGenerator
 from ax.models.random.uniform import UniformGenerator
-from ax.models.random.prior import PriorGenerator
 from ax.models.torch.alebo import ALEBO
 from ax.models.torch.botorch import BotorchModel
 from ax.models.torch.botorch_kg import KnowledgeGradient
@@ -231,11 +230,6 @@ MODEL_KEY_TO_MODEL_SETUP: Dict[str, ModelSetup] = {
         model_class=UniformGenerator,
         transforms=Cont_X_trans,
     ),
-    "Prior": ModelSetup(
-        bridge_class=RandomModelBridge,
-        model_class=PriorGenerator,
-        transforms=Cont_X_trans,
-    ),
     "MOO": ModelSetup(
         bridge_class=TorchModelBridge,
         model_class=MultiObjectiveBotorchModel,
@@ -374,7 +368,7 @@ class ModelRegistryBase(Enum):
                 function=bridge_class, omit=["experiment", "search_space", "data"]
             ),
         )
-        
+
         bridge_kwargs['transform_configs'] = {
             'PowerTransformY': {'metrics': data.metric_names}}
         # Create model bridge with the consolidated kwargs.
@@ -470,7 +464,6 @@ class Models(ModelRegistryBase):
     """
 
     SOBOL = "Sobol"
-    PRIOR = "Prior"
     GPEI = "GPEI"
     GPKG = "GPKG"
     GPMES = "GPMES"
