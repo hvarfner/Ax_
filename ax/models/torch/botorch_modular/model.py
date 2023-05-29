@@ -195,7 +195,7 @@ class BoTorchModel(TorchModel, Base):
         self.acquisition_class = acquisition_class or Acquisition
         self.acquisition_options = acquisition_options or {}
         self._botorch_acqf_class = botorch_acqf_class
-
+    
         self.refit_on_update = refit_on_update
         self.refit_params = refit_params
         self.refit_on_cv = refit_on_cv
@@ -348,7 +348,6 @@ class BoTorchModel(TorchModel, Base):
                     force=True,
                 )
             refit = self.refit_on_update
-
             surrogate.fit(
                 datasets=subset_datasets,
                 metric_names=subset_metric_names,

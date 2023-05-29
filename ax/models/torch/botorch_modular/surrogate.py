@@ -245,7 +245,6 @@ class Surrogate(Base):
                     force=True,
                 )
                 kwargs["metric_names"] = metric_names
-
             self._construct_model(
                 dataset=datasets[0],
                 **kwargs,
@@ -257,6 +256,9 @@ class Surrogate(Base):
                 search_space_digest=search_space_digest,
                 **kwargs,
             )
+
+    def set_noise_scaling(self, y_std: float):
+        self.noise_scaling_factor = 1 / (y_std ** 2)
 
     def _construct_model(
         self,
@@ -279,8 +281,10 @@ class Surrogate(Base):
                 "botorch_model_class must be set to construct single model Surrogate."
             )
         botorch_model_class = self.botorch_model_class
-
         input_constructor_kwargs = {**self.model_options, **(kwargs or {})}
+        if hasattr(self, 'noise_scaling_factor') and 'train_Yvar' in input_constructor_kwargs.keys():
+            input_constructor_kwargs['train_Yvar'] = \
+                input_constructor_kwargs['train_Yvar'] * self.noise_scaling_factor
         botorch_model_class_args = inspect.getfullargspec(botorch_model_class).args
 
         # Temporary workaround to allow models to consume data from
@@ -301,7 +305,7 @@ class Surrogate(Base):
         formatted_model_inputs = botorch_model_class.construct_inputs(
             training_data=dataset, **input_constructor_kwargs
         )
-        
+
         self._set_formatted_inputs(
             formatted_model_inputs=formatted_model_inputs,
             inputs=[
@@ -319,14 +323,17 @@ class Surrogate(Base):
             botorch_model_class_args=botorch_model_class_args,
             robust_digest=kwargs.get("robust_digest", None),
         )
+        formatted_model_inputs.update(self.model_options)
         if input_constructor_kwargs.get('train_Yvar', None) is not None:
-            train_Yvar = torch.ones_like(formatted_model_inputs['train_Y']) * input_constructor_kwargs['train_Yvar']
+            train_Yvar = torch.ones_like(
+                formatted_model_inputs['train_Y']) * input_constructor_kwargs['train_Yvar']
             formatted_model_inputs['train_Yvar'] = train_Yvar
         if input_constructor_kwargs.get('likelihood', None) is not None:
             formatted_model_inputs['likelihood'] = input_constructor_kwargs['likelihood']
-        
-        formatted_model_inputs.update(self.model_options)
+
+
         self._model = botorch_model_class(**formatted_model_inputs)
+
 
     def _construct_model_list(
         self,
@@ -559,13 +566,13 @@ class Surrogate(Base):
         if not refit:
             self.model.covar_module.outputscale = refit_params['outputscale']
             self.model.covar_module.base_kernel.lengthscale = refit_params['lengthscale']
-            
+
         else:
             if state_dict is None or refit:
                 fit_botorch_model(
                     model=self.model, mll_class=self.mll_class, mll_options=self.mll_options
                 )
-        
+
     def predict(self, X: Tensor) -> Tuple[Tensor, Tensor]:
         """Predicts outcomes given a model and input tensor.
 

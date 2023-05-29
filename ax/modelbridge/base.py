@@ -35,7 +35,7 @@ from ax.modelbridge.transforms.cast import Cast
 from ax.models.types import TConfig
 from ax.utils.common.logger import get_logger
 from ax.utils.common.typeutils import checked_cast, not_none
-
+from ax.models.torch.botorch_modular.surrogate import Surrogate
 logger: Logger = get_logger(__name__)
 
 
@@ -127,7 +127,6 @@ class ModelBridge(ABC):
         transforms = transforms or []
         # pyre-ignore: Cast is a Tranform
         transforms: List[Type[Transform]] = [Cast] + transforms
-
         self._metric_names: Set[str] = set()
         self._training_data: List[Observation] = []
         self._optimization_config: Optional[OptimizationConfig] = optimization_config
@@ -173,6 +172,17 @@ class ModelBridge(ABC):
             transform_configs=transform_configs,
         )
 
+        # TODO fix when there's more than one metric
+        if len(observations) > 0:
+            metric_name = observations[0].data.metric_names[0]
+            metric_std = self.transforms.get('StandardizeY', None)
+            if metric_std is None:
+                std = 1
+            else:
+                std = metric_std.Ystd[metric_name]
+
+        if hasattr(model, 'surrogate') and isinstance(model.surrogate, Surrogate):
+            model.surrogate.set_noise_scaling(std)
         # Save model, apply terminal transform, and fit
         self.model = model
         try:
