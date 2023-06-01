@@ -464,6 +464,9 @@ class BoTorchModel(TorchModel, Base):
             torch_opt_config=torch_opt_config,
             expected_acquisition_value=expected_acquisition_value,
         )
+
+        self._acqf = acqf.acqf
+        
         return TorchGenResults(
             points=candidates.detach().cpu(),
             weights=torch.ones(n, dtype=self.dtype),

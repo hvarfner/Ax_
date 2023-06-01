@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from copy import deepcopy
+from copy import deepcopy, copy
 from warnings import warn
 from logging import Logger
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -854,7 +854,7 @@ class GenerationStrategy(Base):
     ) -> GeneratorRun:
 
         if self._curr.model.model_bridge_class is TorchModelBridge:
-            pm_gen = deepcopy(self._curr)
+            pm_gen = copy(self._curr)
             pm_gen.model_spec._fitted_model.model._botorch_acqf_class = PosteriorMean
             pm_gen.model_spec.model_gen_kwargs\
                 ['model_gen_options']['optimizer_kwargs']['raw_samples'] *= raw_samples_increase
