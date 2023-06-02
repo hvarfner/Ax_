@@ -856,8 +856,8 @@ class GenerationStrategy(Base):
         if self._curr.model.model_bridge_class is TorchModelBridge:
             pm_gen = copy(self._curr)
             pm_gen.model_spec._fitted_model.model._botorch_acqf_class = PosteriorMean
-            pm_gen.model_spec.model_gen_kwargs\
-                ['model_gen_options']['optimizer_kwargs']['raw_samples'] *= raw_samples_increase
+            # pm_gen.model_spec.model_gen_kwargs\
+            #    ['model_gen_options']['optimizer_kwargs']['raw_samples'] *= raw_samples_increase
 
             generator_run = _gen_from_generation_step(
                 generation_step=pm_gen,
