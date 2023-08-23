@@ -179,10 +179,12 @@ class ModelBridge(ABC):
             if metric_std is None:
                 std = 1
             else:
-                std = metric_std.Ystd[metric_name]
+                self.Ystd = metric_std.Ystd[metric_name]
+                self.Ymean = metric_std.Ymean[metric_name]
 
         if hasattr(model, 'surrogate') and isinstance(model.surrogate, Surrogate):
-            model.surrogate.set_noise_scaling(std)
+            model.surrogate.set_noise_scaling(self.Ystd)
+        
         # Save model, apply terminal transform, and fit
         self.model = model
         try:

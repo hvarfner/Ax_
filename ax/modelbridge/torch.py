@@ -502,13 +502,14 @@ class TorchModelBridge(ModelBridge):
             outcomes=self.outcomes,
             parameters=parameters,
         )
+
         # Get all relevant information on the parameters
         search_space_digest = extract_search_space_digest(
             search_space=search_space, param_names=self.parameters
         )
         # Fit
         self.model = model
-        
+
         self.model.fit(
             # datasets are guaranteed to have all outcomes here by construction
             datasets=[not_none(dataset) for dataset in datasets],
@@ -532,7 +533,7 @@ class TorchModelBridge(ModelBridge):
         The outcome constraints should be transformed to no longer be relative.
         """
         if self.model is None:
-            raise ValueError(FIT_MODEL_ERROR.format(action="_gen"))  # pragma: no cover
+            raise ValueError(FIT_MODEL_ERROR.format(action="_gen"))  # pragma: no covermode
 
         augmented_model_gen_options = {
             **self._default_model_gen_options,
@@ -553,6 +554,14 @@ class TorchModelBridge(ModelBridge):
         is_moo_problem = self.is_moo_problem and isinstance(
             self.model, (BoTorchModel, MultiObjectiveBotorchModel)
         )
+
+        if hasattr(self, 'Ymean'):
+            self.model.surrogate.model.register_buffer('Ymean', Tensor([self.Ymean]))
+            self.model.surrogate.model.register_buffer('Ystd', Tensor([self.Ystd]))
+        else:
+            self.model.surrogate.model.register_buffer('Ymean', Tensor([1]))
+            self.model.surrogate.model.register_buffer('Ystd', Tensor([1]))
+
         gen_results = not_none(self.model).gen(
             n=n,
             search_space_digest=search_space_digest,
