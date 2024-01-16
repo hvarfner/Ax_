@@ -563,7 +563,7 @@ class Surrogate(Base):
         if state_dict:
             self.model.load_state_dict(not_none(state_dict))
 
-        if not refit:
+        elif not refit and hasattr(refit_params, 'outputscale'):
             self.model.covar_module.outputscale = refit_params['outputscale']
             self.model.covar_module.base_kernel.lengthscale = refit_params['lengthscale']
 
