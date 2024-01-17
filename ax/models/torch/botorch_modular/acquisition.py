@@ -413,42 +413,6 @@ class Acquisition(Base):
                 if not 0 <= i < len(ssd.feature_names):
                     raise ValueError(f"Invalid fixed_feature index: {i}")
 
-        from botorch.acquisition.variational_entropy_search import VariationalEntropySearch
-        # 1. Handle the fully continuous search space.
-        if isinstance(self.acqf, VariationalEntropySearch):
-            kg_X, kg_acq = optimize_acqf(
-                acq_function=self.acqf.kg,
-                bounds=bounds,
-                q=n,
-                inequality_constraints=inequality_constraints,
-                fixed_features=fixed_features,
-                post_processing_func=rounding_func,
-                **optimizer_options_with_defaults,
-            )
-            ei_X, ei_acq = optimize_acqf(
-                acq_function=self.acqf.ei_acq,
-                bounds=bounds,
-                q=n,
-                inequality_constraints=inequality_constraints,
-                fixed_features=fixed_features,
-                post_processing_func=rounding_func,
-                **optimizer_options_with_defaults,
-            )
-            pi_X, pi_acq = optimize_acqf(
-                acq_function=self.acqf.pi_acq,
-                bounds=bounds,
-                q=n,
-                inequality_constraints=inequality_constraints,
-                fixed_features=fixed_features,
-                post_processing_func=rounding_func,
-                **optimizer_options_with_defaults,
-            )
-            Xs = [kg_X, ei_X, pi_X]
-            vals = Tensor([kg_acq.item(), ei_acq.item(), pi_acq.item()])
-            argmax = torch.argmax(vals)
-
-            return Xs[argmax], vals[argmax]
-        
         if not discrete_features:
             return optimize_acqf(
                 acq_function=self.acqf,
