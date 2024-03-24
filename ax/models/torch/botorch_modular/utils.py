@@ -33,6 +33,7 @@ from botorch.models.gpytorch import BatchedMultiOutputGPyTorchModel, GPyTorchMod
 from botorch.models.model import Model, ModelList
 from botorch.models.multitask import FixedNoiseMultiTaskGP, MultiTaskGP
 from botorch.models.pairwise_gp import PairwiseGP
+from botorch.models.approximate_gp import SingleTaskVariationalGP
 from botorch.models.transforms.input import ChainedInputTransform
 from botorch.utils.datasets import FixedNoiseDataset, SupervisedDataset
 from botorch.utils.transforms import is_fully_bayesian, uses_own_fit
@@ -271,14 +272,24 @@ def fit_botorch_model(
 ) -> None:
     """Fit a BoTorch model."""
     models = model.models if isinstance(model, ModelList) else [model]
+
+    if mll_options is None:
+        throw_error = False
+        mll_options_ = {}
+    else:
+        mll_options_ = mll_options.copy()
+        throw_error = mll_options_.pop("throw_error", False)
+
     for m in models:
         # TODO: Support deterministic models when we support `ModelList`
         if is_fully_bayesian(m):
             m.fit()
+        elif isinstance(m, SingleTaskVariationalGP):
+            mll = mll_class(likelihood=m.likelihood, model=m.model, num_data=len(m.model.train_targets), **mll_options_)
+            fit_gpytorch_mll(mll, throw_error=throw_error)
         elif isinstance(m, (GPyTorchModel, PairwiseGP)):
-            mll_options = mll_options or {}
-            mll = mll_class(likelihood=m.likelihood, model=m, **mll_options)
-            fit_gpytorch_mll(mll)
+            mll = mll_class(likelihood=m.likelihood, model=m, **mll_options_)
+            fit_gpytorch_mll(mll, throw_error=throw_error)
         else:
             raise NotImplementedError(
                 f"Model of type {m.__class__.__name__} is currently not supported."
