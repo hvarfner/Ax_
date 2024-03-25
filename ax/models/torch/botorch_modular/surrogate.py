@@ -301,7 +301,7 @@ class Surrogate(Base):
             dataset = SupervisedDataset(X=dataset.X(), Y=dataset.Y())
 
         self._training_data = [dataset]
-
+        input_constructor_kwargs = deepcopy(input_constructor_kwargs)
         formatted_model_inputs = botorch_model_class.construct_inputs(
             training_data=dataset, **input_constructor_kwargs
         )
@@ -323,14 +323,13 @@ class Surrogate(Base):
             botorch_model_class_args=botorch_model_class_args,
             robust_digest=kwargs.get("robust_digest", None),
         )
-        formatted_model_inputs.update(self.model_options)
+        formatted_model_inputs.update(deepcopy(self.model_options))
         if input_constructor_kwargs.get('train_Yvar', None) is not None:
             train_Yvar = torch.ones_like(
                 formatted_model_inputs['train_Y']) * input_constructor_kwargs['train_Yvar']
             formatted_model_inputs['train_Yvar'] = train_Yvar
         if input_constructor_kwargs.get('likelihood', None) is not None:
             formatted_model_inputs['likelihood'] = input_constructor_kwargs['likelihood']
-
 
         self._model = botorch_model_class(**formatted_model_inputs)
 

@@ -21,7 +21,7 @@ from botorch.acquisition.monte_carlo import qNoisyExpectedImprovement
 from botorch.acquisition.multi_objective.monte_carlo import (
     qNoisyExpectedHypervolumeImprovement,
 )
-from botorch.fit import fit_fully_bayesian_model_nuts, fit_gpytorch_mll
+from botorch.fit import fit_fully_bayesian_model_nuts, fit_gpytorch_mll, fit_gpytorch_model
 from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP
 from botorch.models.gp_regression import FixedNoiseGP, SingleTaskGP
 from botorch.models.gp_regression_fidelity import (
@@ -289,12 +289,14 @@ def fit_botorch_model(
             fit_gpytorch_mll(mll, throw_error=throw_error)
         elif isinstance(m, (GPyTorchModel, PairwiseGP)):
             mll = mll_class(likelihood=m.likelihood, model=m, **mll_options_)
-            fit_gpytorch_mll(mll, throw_error=throw_error)
+            if not throw_error:
+                fit_gpytorch_model(mll)
+            else:
+                fit_gpytorch_mll(mll)
         else:
             raise NotImplementedError(
                 f"Model of type {m.__class__.__name__} is currently not supported."
             )
-
 
 @contextmanager
 def disable_one_to_many_transforms(model: Model) -> Generator[None, None, None]:
